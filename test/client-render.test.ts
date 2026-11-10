@@ -686,3 +686,44 @@ test('模型行显示官网价格档位与夜间折扣', async () => {
   assert.ok(text.includes('discountBadge'), '夜间折扣要显示');
   assert.ok(text.includes('千问最新平衡模型'), '官网说明要显示');
 });
+
+// ---------------------------------------------------------------------------
+// API Key 是唯一主路径（对齐 qoder 的 PAT 模式）：
+// 未登录时不该再摆「登录秒悟」主按钮，否则用户以为必须先登录。
+// ---------------------------------------------------------------------------
+
+test('未登录时账号区没有「登录秒悟」主按钮（API Key 才是主路径）', async () => {
+  const bundle = await setup(
+    fullDoc({ login: { state: 'signed-out', source: 'none', hasServiceAk: false, canLogin: true } }),
+  );
+  const Page = componentOf(bundle.registered, 'plugins.bundle.config');
+  const tree = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
+
+  // loginNow 这个键仍然存在（「高级」里那个次要按钮要用它），
+  // 但页面上只该出现一次 —— 不能像改之前那样既在账号区标题又在高级里。
+  const text = renderText(tree, bundle.react);
+  const occurrences = text.split('loginNow').length - 1;
+  assert.equal(occurrences, 1, '「登录秒悟」只该出现在高级区那一个次要按钮上');
+
+  // 但浏览器授权仍要可达（降级到「高级」），否则没 key 的用户无路可走。
+  assert.ok(text.includes('oauthTitle'), '「高级」里要有浏览器授权入口');
+  assert.ok(text.includes('advancedTitle'), '要有「高级」这一节');
+});
+
+test('未登录提示指向 API Key，而不是让人去点登录', async () => {
+  const bundle = await setup(
+    fullDoc({ login: { state: 'signed-out', source: 'none', hasServiceAk: false, canLogin: true } }),
+  );
+  const Page = componentOf(bundle.registered, 'plugins.bundle.config');
+  const text = render(bundle, Page, { t: (key: string) => key, surface: 'detail' });
+  assert.ok(text.includes('signedOutHint'), '要有未登录提示');
+});
+
+test('已登录时「高级」里的浏览器授权不再给按钮', async () => {
+  const bundle = await setup(fullDoc());
+  const Page = componentOf(bundle.registered, 'plugins.bundle.config');
+  const tree = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
+  const text = renderText(tree, bundle.react);
+  // 已登录仍显示这一行（说明来源），但不该再出现「登录秒悟」按钮。
+  assert.equal(text.includes('loginNow'), false, '已登录时不该有登录按钮');
+});

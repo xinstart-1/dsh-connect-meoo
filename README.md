@@ -70,7 +70,18 @@ dsh-connect-meoo (Host)
 （`https://api.meoo.host/meoo-ai/compatible-mode/v1`），pi-ai 直接以
 「项目服务 AK 作 apiKey + 网关作 baseURL」转发。少一层代理就少一类掉流式的故障。
 
-## 登录：三条路，API Key 最省事
+## 登录：填一个 API Key 就完事（不需要登录账号）
+
+和 qoder 插件用 PAT 是同一个模式：**key 就是凭据，插件自动读出账号**。
+卡片里没有「登录」按钮——填 key 是唯一主路径，浏览器授权只是没有 key 时的备选，
+折叠在「高级」里。
+
+```
+贴 meoo_ak_… → 读身份 → 列项目 → 读积分 → 解析项目服务 AK → 拉模型目录
+                （项目没开通云服务时自动开通一次）
+```
+
+## 三条路对比
 
 | 方式 | 成本 | 能读积分 | 会过期吗 |
 | --- | --- | --- | --- |
@@ -215,7 +226,7 @@ node scripts/preview-ui.mjs  # 离屏渲染 UI 并截图到 docs/assets
 | `check-host` | 宿主真能 `import()` 这个包、`dsh` 声明与 patch row name 都对 |
 | `check-cordis` | **用真的 Cordis `Context` 装载一次**，含卸载释放（假 ctx 验不出 Cordis 接不接受） |
 | `check-endpoint-evidence` | 写「上游没有某接口」必须指向一份带**对照组**的取证记录 |
-| `tests` | 140 个单测（含**浏览器半侧真实渲染**：组件函数真的被执行一遍，含开关语义/搜索过滤/胶囊弹层） |
+| `tests` | 143 个单测（含**浏览器半侧真实渲染**：组件函数真的被执行一遍，含开关语义/搜索过滤/胶囊弹层） |
 | `preview-ui` | 浏览器半侧离屏渲染 16 个页面：非空、CSS 已注入、无 `undefined`（`--check` 模式，不落盘不截图） |
 | `smoke-apply` | 真跑一次 `apply()` 并验证注册内容 |
 

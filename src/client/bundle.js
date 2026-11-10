@@ -252,7 +252,7 @@
     openPanel: '打开秒悟面板',
     metaTitle: 'DSH Connect 秒悟 Meoo',
     metaDescription:
-      '把秒悟 Meoo 的模型接入 DSH：浏览器授权一次即可，这里管理登录态、积分余额、模型目录与开关。',
+      '把秒悟 Meoo 的模型接入 DSH：填一个 API Key 即可，这里管理账号、积分余额、模型目录与开关。',
     name: 'Meoo 秒悟',
     pill: '秒悟',
     pillPoints: '秒悟 · {points}',
@@ -289,12 +289,12 @@
     refresh: '刷新',
     refreshing: '刷新中…',
     loginHint:
-      '点「登录秒悟」会在浏览器打开授权页；点一次「授权」后，项目与 AI 服务 AK 会自动解析。也可以用 /meoo key 或本页手填 AK。',
+      '点「浏览器授权」会在浏览器打开授权页；点一次「授权」后，项目与 AI 服务 AK 会自动解析。',
     signedInHint:
-      '登录态已就绪，项目与 AI 服务 AK 会自动解析。要换账号先退出登录再授权一次；手填 AK 是另一条路，见下面那一节。',
+      '登录态已就绪，项目与 AI 服务 AK 会自动解析。换账号就重新填一个 API Key。',
     signedOutHint:
-      '还没有读到秒悟登录态。点「登录秒悟」在你自己的浏览器里授权一次即可；插件从不接触你的密码。',
-    expiredHint: '登录态已失效。点「登录秒悟」重新授权一次。',
+      '还没有读到秒悟凭据。在上面填一个 API Key 即可 —— 插件会自动读出账号、项目与积分，不用再登录。',
+    expiredHint: '登录态已失效。重新填一次 API Key，或在「高级 → 浏览器授权」里重新授权。',
     apiKeyTitle: 'API Key（推荐）',
     apiKeyLabel: '控制面 API Key（meoo_ak_…）',
     apiKeyPlaceholder: 'meoo_ak_…',
@@ -304,6 +304,8 @@
       '在 meoo.com → 设置 → API 密钥 里生成一串 meoo_ak_… 粘贴到这里。插件会用它读出账号、项目与积分，并自动换出项目服务 AK —— 不用点浏览器，也不会过期。',
     apiKeyBadType: '这是项目服务 AK，不是 API Key；API Key 以 meoo_ak_ 开头。',
     advancedTitle: '高级',
+    oauthTitle: '浏览器授权',
+    oauthHint: '没有 API Key 时的备选：在浏览器里点一次「授权」。',
     akTitle: '手动指定项目服务 AK',
     akLabel: '项目服务 AK（meoo_project_service_v1.…）',
     akPlaceholder: 'meoo_project_service_v1.…',
@@ -439,10 +441,10 @@
     loginHint:
       '“Sign in to Meoo” opens the authorisation page in your browser; press Authorise once and the project plus AI service AK are resolved automatically. You can also paste an AK here or use /meoo key.',
     signedInHint:
-      'Signed in. The project and AI service AK are resolved automatically. To switch accounts, sign out and authorise again; pasting an AK is the other route, see the section below.',
+      'Signed in. The project and AI service AK are resolved automatically. To switch accounts, paste a different API key.',
     signedOutHint:
-      'No Meoo sign-in found yet. Press “Sign in to Meoo” to authorise once in your own browser; the plugin never touches your password.',
-    expiredHint: 'The sign-in expired. Press “Sign in to Meoo” to authorise again.',
+      'No Meoo credentials yet. Paste an API key above — the plugin reads your account, project and points automatically. No sign-in needed.',
+    expiredHint: 'The sign-in expired. Paste an API key again, or re-authorise under Advanced → Browser sign-in.',
     apiKeyTitle: 'API Key (recommended)',
     apiKeyLabel: 'Control-plane API key (meoo_ak_…)',
     apiKeyPlaceholder: 'meoo_ak_…',
@@ -452,6 +454,8 @@
       'Create a meoo_ak_… key at meoo.com → Settings → API keys and paste it here. The plugin reads your account, projects and points with it and resolves the project service AK automatically — no browser, no expiry.',
     apiKeyBadType: 'That is a project service AK, not an API key; API keys start with meoo_ak_.',
     advancedTitle: 'Advanced',
+    oauthTitle: 'Browser sign-in',
+    oauthHint: 'Fallback when you have no API key: approve once in your browser.',
     akTitle: 'Set a project service AK by hand',
     akLabel: 'Project service AK (meoo_project_service_v1.…)',
     akPlaceholder: 'meoo_project_service_v1.…',
@@ -1010,22 +1014,9 @@
             Section,
             {
               title: t('account'),
-              // 已登录时不再摆一个「登录」主按钮：那会让人以为登录态没生效。
-              actions:
-                state === 'signed-in'
-                  ? null
-                  : h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'dsm-meoo-btn dsm-meoo-btn-primary',
-                        disabled: busy !== '',
-                        onClick: function () {
-                          doLogin(false);
-                        },
-                      },
-                      busy === 'login' || pending ? t('loggingIn') : t('loginNow'),
-                    ),
+              // 不摆「登录秒悟」主按钮：API Key 才是主路径，两个并列的入口会让人
+              // 以为必须点登录。浏览器授权降级到「高级」里的次要链接（见下方 oauthRow）。
+              actions: null,
             },
             h(
               Row,
@@ -1181,6 +1172,26 @@
                   ),
                 )
               : null,
+            // 浏览器授权：没有 API Key 时的备选。默认折叠，避免和 API Key 抢主路径。
+            h(
+              Row,
+              { name: t('oauthTitle'), sub: t('oauthHint') },
+              // 已登录时这一行只是说明，不再给按钮（否则像是没登录成功）。
+              state === 'signed-in'
+                ? null
+                : h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dsm-meoo-btn dsm-meoo-btn-sm',
+                      disabled: busy !== '',
+                      onClick: function () {
+                        doLogin(false);
+                      },
+                    },
+                    busy === 'login' || pending ? t('loggingIn') : t('loginNow'),
+                  ),
+            ),
           ),
           h(ProjectPanel, { t: t, doc: doc }),
         );
