@@ -2,7 +2,7 @@
   "name": "dsh-connect-meoo",
   "displayName": "DSH Connect 秒悟 Meoo",
   "description": "把秒悟 Meoo（meoo.com）的模型接进 DeepSeek Harness：浏览器 OAuth(PKCE) 一次授权后自动解析项目服务 AK，模型出现在 DSH 模型选择器里；插件设置页以 tab 展示账号、积分余额、模型目录、开关与诊断，输入框旁有积分胶囊读数，可选侧栏整页。",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "author": "xinstart-1",
   "license": "MIT",
   "keywords": [
