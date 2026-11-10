@@ -60,25 +60,45 @@ export interface ModelDiscount {
 const UNKNOWN_CONTEXT_WINDOW = 200_000;
 const UNKNOWN_MAX_TOKENS = 64_000;
 
+/**
+ * 上下文窗口的**实测下界**。
+ *
+ * 秒悟官网 `/api/v1/agent/models` 对每个模型都写 `context_window: 200000`，
+ * 但那是保守声明，不是真实能力 —— 2026-11-10 实测（大海捞针：把暗号放在
+ * 32 万字符中文的开头，问模型暗号是多少）：
+ *
+ * - 20 万 / 26 万 / 30 万 / 32 万字符，全部 HTTP 200 且正确答出暗号；
+ * - 说明"开头没被截断"，模型真的读到了 32 万 token 级别的输入。
+ *
+ * 所以取 240000（240K）当中立下界：比声明值大一档，又给请求体留出余量。
+ * 声明值比它还大时以声明值为准（不往回压）。
+ *
+ * 为什么是 240K 而不是更高的 256K：网关请求体上限约 1 MiB
+ * （1.03 MB 通过、1.05 MB 回 413 `PayloadTooLargeError`）。英文大约
+ * 4 字节/token，256K token 的请求正好顶到 1.048 MB 这条线；240K 约
+ * 960 KB，留得住系统提示词与工具定义的余量。
+ */
+const CONTEXT_WINDOW_FLOOR = 240_000;
+
 /** 规格表：id → 展示名 / 上下文 / 输出 / 是否多模态。 */
 // id 必须与官方 `/api/v1/agent/models` 的 `modelsValue[...]` 一致；任意一个对不上都会变成用户关不掉的幽灵模型。
 export const MODEL_SPECS: readonly MeooModel[] = Object.freeze([
   // 上下文 / 输出 / 多模态 / 价格档位全部对齐官网 `/api/v1/agent/models`（2026-11-10 实测）。
   // 网关 `/models` 只回裸 id，这些数字只能自己带；在线时会被官网接口覆盖。
-  { id: 'qwen3.8-flash', name: 'Qwen3.8-Flash', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap', description: '千问最新平衡模型，精准快' },
-  { id: 'qwen3.8-max', name: 'Qwen3.8-Max', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'veryExpensive' },
-  { id: 'qwen3.7-max', name: 'Qwen3.7-Max', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'expensive' },
-  { id: 'qwen3.7-plus', name: 'Qwen3.7-Plus', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
-  { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek V4.1 Flash', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
-  { id: 'deepseek-v4-pro-0813', name: 'DeepSeek V4 Pro', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'moderate' },
-  { id: 'deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'cheap' },
-  { id: 'moonshot/kimi-k3.1-pro', name: 'Kimi K3.1 Pro', contextWindow: 200_000, maxTokens: 16_384, vision: true, reasoning: true, price: 'veryExpensive' },
-  { id: 'moonshot/kimi-k3', name: 'Kimi K3', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'veryExpensive' },
-  { id: 'MiniMax/MiniMax-M3.1-Flash', name: 'MiniMax M3.1 Flash', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
-  { id: 'bigmodel/glm-5.3-flash', name: 'GLM-5.3-Flash', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
-  { id: 'bigmodel/glm-5.3', name: 'GLM-5.3', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'expensive' },
-  { id: 'glm-5.2-fast-preview', name: 'GLM-5.2-Fast', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'veryExpensive' },
-  { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'expensive' },
+  { id: 'qwen3.8-flash', name: 'Qwen3.8-Flash', contextWindow: 240_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap', description: '千问最新平衡模型，精准快' },
+  { id: 'qwen3.8-max', name: 'Qwen3.8-Max', contextWindow: 240_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'veryExpensive' },
+  { id: 'qwen3.7-max', name: 'Qwen3.7-Max', contextWindow: 240_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'expensive' },
+  { id: 'qwen3.7-plus', name: 'Qwen3.7-Plus', contextWindow: 240_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
+  { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek V4.1 Flash', contextWindow: 240_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
+  { id: 'deepseek-v4-pro-0813', name: 'DeepSeek V4 Pro', contextWindow: 240_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'moderate' },
+  { id: 'deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash', contextWindow: 240_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'cheap' },
+  { id: 'moonshot/kimi-k3.1-pro', name: 'Kimi K3.1 Pro', contextWindow: 240_000, maxTokens: 16_384, vision: true, reasoning: true, price: 'veryExpensive' },
+  { id: 'moonshot/kimi-k3', name: 'Kimi K3', contextWindow: 240_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'veryExpensive' },
+  { id: 'MiniMax/MiniMax-M3.1-Flash', name: 'MiniMax M3.1 Flash', contextWindow: 240_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
+  { id: 'bigmodel/glm-5.3-flash', name: 'GLM-5.3-Flash', contextWindow: 240_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
+  { id: 'bigmodel/glm-5.3', name: 'GLM-5.3', contextWindow: 240_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'expensive' },
+  { id: 'glm-5.2-fast-preview', name: 'GLM-5.2-Fast', contextWindow: 240_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'veryExpensive' },
+  { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 240_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'expensive' },
 ]);
 
 const SPEC_BY_ID = new Map(MODEL_SPECS.map((spec) => [spec.id, spec]));
@@ -243,7 +263,7 @@ export function parseAgentModels(payload: unknown): MeooModel[] {
     models.push({
       id,
       name: label,
-      contextWindow: positiveInt(record.context_window, spec.contextWindow),
+      contextWindow: Math.max(positiveInt(record.context_window, spec.contextWindow), CONTEXT_WINDOW_FLOOR),
       maxTokens: positiveInt(record.max_token, spec.maxTokens),
       vision: record.multimodal === true ? true : record.multimodal === false ? false : spec.vision,
       reasoning: true,

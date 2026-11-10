@@ -243,3 +243,33 @@ test('normalizeState 归一旧 id 并去重', () => {
   });
   assert.deepEqual(state.disabledModels, ['moonshot/kimi-k3', 'moonshot/kimi-k3.1-pro']);
 });
+
+test('官方声明的 200K 上下文被抬到实测下界 240K', () => {
+  // 秒悟官网对每个模型都写 context_window: 200000，实测 32 万字符仍能正确回忆开头内容。
+  const models = parseAgentModels({
+    data: {
+      models: [
+        {
+          key: 'deepseekV41Flash1017',
+          context_window: 200_000,
+          max_token: 64_000,
+          label: 'DeepSeek V4.1 Flash',
+        },
+      ],
+      modelsValue: { deepseekV41Flash1017: 'deepseek-v4.1-flash-1017' },
+    },
+  });
+  assert.equal(models.length, 1);
+  assert.equal(models[0]?.contextWindow, 240_000, '声明值低于实测下界时抬到 240K');
+  assert.equal(models[0]?.maxTokens, 64_000, '输出上限保持官方声明');
+});
+
+test('声明值高于下界时以声明值为准，不被压回去', () => {
+  const models = parseAgentModels({
+    data: {
+      models: [{ key: 'bigmodel/glm-5.3', context_window: 1_000_000, max_token: 64_000 }],
+      modelsValue: { 'bigmodel/glm-5.3': 'bigmodel/glm-5.3' },
+    },
+  });
+  assert.equal(models[0]?.contextWindow, 1_000_000);
+});
