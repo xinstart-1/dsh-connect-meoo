@@ -13,7 +13,7 @@
 export const PROVIDER = 'meoo';
 
 /** 插件版本号（卡片与日志显示）。与 package.json 的 version 保持一致。 */
-export const VERSION = '0.0.4';
+export const VERSION = '0.0.5';
 
 /** 设置页命名空间（插件设置卡片的挂载点）。 */
 export const SETTINGS_NS = 'meoo';

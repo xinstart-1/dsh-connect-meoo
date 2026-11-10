@@ -197,6 +197,33 @@ Authorization: Bearer <项目服务 AK>
 标准 OpenAI Chat Completions：`POST {gateway}/chat/completions`。
 pi-ai 的 `openai-completions` API 直通，**不需要本地翻译层**。
 
+#### 两个必须显式覆盖的兼容项（2026-11-10 实测）
+
+pi-ai 会按 `baseUrl` 白名单自动猜「上游是不是标准 OpenAI」。`api.meoo.host`
+不在名单里，于是它按「标准 OpenAI」处理 —— 两处猜错，其中第一处会让模型**完全不可用**：
+
+| 猜测项 | 自动值 | 秒悟实际 | 后果 |
+| --- | --- | --- | --- |
+| `supportsDeveloperRole` | `true` | ❌ 只收 `system`/`assistant`/`user`/`tool`/`function` | **HTTP 400** |
+| `maxTokensField` | `max_completion_tokens` | `max_tokens`（LiteLLM 风格） | 输出上限被忽略 |
+
+400 的原文（可复现）：
+
+```
+POST /chat/completions  {"role":"developer", …}
+→ HTTP 400 {"error":{"message":"developer is not one of ['system', 'assistant', 'user', 'tool', 'function']",
+                      "code":"invalid_parameter_error"}}
+```
+
+把同一条消息的 `role` 换成 `system` 立刻 200。所以 `toPiModel()` 里必须写死：
+
+```ts
+compat: { supportsDeveloperRole: false, maxTokensField: 'max_tokens', … }
+```
+
+**不覆盖的症状是「模型测试失败 / 对话直接报 400」，而不是崩溃**——pi-ai 的默认值
+只在带 reasoning 的模型上才发 `developer`，所以看起来像是「某些模型坏了」。
+
 ### 5.3 思考档位
 
 `@fish-under-sea/opencode-meoo-auth` 2026-11 实测（qwen3.8-flash）：

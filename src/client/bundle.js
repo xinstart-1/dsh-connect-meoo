@@ -303,19 +303,8 @@
     apiKeyHint:
       '在 meoo.com → 设置 → API 密钥 里生成一串 meoo_ak_… 粘贴到这里。插件会用它读出账号、项目与积分，并自动换出项目服务 AK —— 不用点浏览器，也不会过期。',
     apiKeyBadType: '这是项目服务 AK，不是 API Key；API Key 以 meoo_ak_ 开头。',
-    advancedTitle: '高级',
-    oauthTitle: '浏览器授权',
-    oauthHint: '没有 API Key 时的备选：在浏览器里点一次「授权」。',
-    akTitle: '手动指定项目服务 AK',
-    akLabel: '项目服务 AK（meoo_project_service_v1.…）',
-    akPlaceholder: 'meoo_project_service_v1.…',
-    akSave: '校验并保存',
-    akSaving: '校验中…',
-    akHint: '默认不需要：上面的 API Key 会自动换出项目服务 AK。只有想手动指定某个项目时才打开。手填的 AK 读不到积分。',
-    project: '项目',
-    projectNone: '未选中项目',
-    projectSwitch: '切换',
-    projectHint: 'AK 挂在项目下，换项目会重新解析 AK。',
+    apiKeyOk: '已解析：{name} · {points} 积分 · {models} 个模型',
+    apiKeyOkNoPoints: '已解析：{name} · {models} 个模型',
     points: '积分',
     pointsAvailable: '可用积分',
     pointsConsumed: '已用',
@@ -453,19 +442,8 @@
     apiKeyHint:
       'Create a meoo_ak_… key at meoo.com → Settings → API keys and paste it here. The plugin reads your account, projects and points with it and resolves the project service AK automatically — no browser, no expiry.',
     apiKeyBadType: 'That is a project service AK, not an API key; API keys start with meoo_ak_.',
-    advancedTitle: 'Advanced',
-    oauthTitle: 'Browser sign-in',
-    oauthHint: 'Fallback when you have no API key: approve once in your browser.',
-    akTitle: 'Set a project service AK by hand',
-    akLabel: 'Project service AK (meoo_project_service_v1.…)',
-    akPlaceholder: 'meoo_project_service_v1.…',
-    akSave: 'Verify and save',
-    akSaving: 'Verifying…',
-    akHint: 'Normally unnecessary: the API key above resolves the project service AK for you. Turn this on only to pin one project by hand. A pasted AK cannot read points.',
-    project: 'Project',
-    projectNone: 'No project selected',
-    projectSwitch: 'Switch',
-    projectHint: 'The AK belongs to a project; switching re-resolves it.',
+    apiKeyOk: 'Resolved: {name} · {points} points · {models} models',
+    apiKeyOkNoPoints: 'Resolved: {name} · {models} models',
     points: 'Points',
     pointsAvailable: 'Available',
     pointsConsumed: 'Used',
@@ -876,22 +854,24 @@
         return t('accountSignedOut');
       }
 
-      /** 账号栏：登录态 + 登录/退出 + 手填 AK + 项目选择。 */
+      /** 账号栏：登录态 + 登录/退出。 */
       function AccountPanel(props) {
         var t = props.t;
         var doc = useSnapshot();
-        var akState = React.useState('');
-        var ak = akState[0];
-        var setAk = akState[1];
         var busyState = React.useState('');
         var busy = busyState[0];
         var setBusy = busyState[1];
         var apiKeyState = React.useState('');
         var apiKeyInput = apiKeyState[0];
         var setApiKeyInput = apiKeyState[1];
-        var showAkState = React.useState(false);
-        var showAk = showAkState[0];
-        var setShowAk = showAkState[1];
+        // API Key 保存结果要就地显示：成功（解析出账号/积分/模型）与失败（401、格式错）
+        // 都不能只写进一个只在「登录中」才渲染的状态里，否则用户看到的就是「点了没反应」。
+        var apiKeyMsgState = React.useState('');
+        var apiKeyMsg = apiKeyMsgState[0];
+        var setApiKeyMsg = apiKeyMsgState[1];
+        var apiKeyToneState = React.useState('info');
+        var apiKeyTone = apiKeyToneState[0];
+        var setApiKeyTone = apiKeyToneState[1];
         var codeState = React.useState('');
         var loginCode = codeState[0];
         var setLoginCode = codeState[1];
@@ -925,13 +905,29 @@
         function saveApiKey() {
           if (apiKeyInput.trim() === '') return;
           setBusy('apikey');
-          setCodeMsg('');
+          setApiKeyMsg('');
+          setApiKeyTone('info');
           void act('apikey', { apiKey: apiKeyInput.trim() }).then(function (result) {
             setBusy('');
             if (result !== undefined && result.ok === true) {
               setApiKeyInput('');
+              // 成功必须看得见：只清空输入框，用户会以为「点了没反应」。
+              var status = result.status;
+              var login = status === undefined ? undefined : status.login;
+              var points = status === undefined ? undefined : status.points;
+              var models = status === undefined || status.models === undefined ? [] : status.models;
+              var name = login !== undefined && login.name !== undefined ? String(login.name) : '秒悟';
+              setApiKeyTone('ok');
+              setApiKeyMsg(
+                points !== undefined && points.state === 'ok' && typeof points.available === 'number'
+                  ? t('apiKeyOk', { name: name, points: points.available, models: models.length })
+                  : t('apiKeyOkNoPoints', { name: name, models: models.length }),
+              );
             } else {
-              setCodeMsg(result !== undefined && result.error !== undefined ? String(result.error) : t('actionFailed'));
+              setApiKeyTone('err');
+              setApiKeyMsg(
+                result !== undefined && result.error !== undefined ? String(result.error) : t('actionFailed'),
+              );
             }
           });
         }
@@ -958,15 +954,6 @@
           setBusy('logout');
           void act('logout').then(function () {
             setBusy('');
-          });
-        }
-
-        function saveAk() {
-          if (ak.trim() === '') return;
-          setBusy('ak');
-          void act('ak', { serviceAk: ak }).then(function (result) {
-            setBusy('');
-            if (result !== undefined && result.ok === true) setAk('');
           });
         }
 
@@ -1009,6 +996,23 @@
                 busy === 'apikey' ? t('apiKeySaving') : t('apiKeySave'),
               ),
             ),
+            apiKeyMsg === ''
+              ? null
+              : h(
+                  'div',
+                  {
+                    className:
+                      'dsm-meoo-banner ' +
+                      (apiKeyTone === 'ok' ? 'dsm-meoo-banner-info' : apiKeyTone === 'err' ? 'dsm-meoo-banner-error' : 'dsm-meoo-banner-info'),
+                    role: apiKeyTone === 'err' ? 'alert' : 'status',
+                  },
+                  h(Dot, { tone: apiKeyTone === 'ok' ? 'ok' : apiKeyTone === 'err' ? 'err' : 'warn' }),
+                  h(
+                    'div',
+                    { className: 'dsm-meoo-banner-body' },
+                    h('div', { className: 'dsm-meoo-banner-text' }, apiKeyMsg),
+                  ),
+                ),
           ),
           h(
             Section,
@@ -1134,107 +1138,6 @@
                   ),
                 )
               : null,
-          ),
-          // 项目服务 AK 是内部细节：API Key 会自动换出它，用户不需要看见、更不需要手填。
-          // 只有想手动指定某个项目的 AK 时才展开这一节。
-          h(
-            Section,
-            { title: t('advancedTitle') },
-            h(
-              Row,
-              { name: t('akTitle'), sub: t('akHint') },
-              h(Switch, {
-                checked: showAk === true,
-                label: t('akTitle'),
-                onChange: function (next) {
-                  setShowAk(next === true);
-                },
-              }),
-            ),
-            showAk === true
-              ? h(
-                  'div',
-                  { className: 'dsm-meoo-actions' },
-                  h('input', {
-                    type: 'password',
-                    className: 'dsm-meoo-input',
-                    value: ak,
-                    placeholder: t('akPlaceholder'),
-                    'aria-label': t('akLabel'),
-                    onChange: function (event) {
-                      setAk(event.target.value);
-                    },
-                  }),
-                  h(
-                    'button',
-                    { type: 'button', className: 'dsm-meoo-btn', disabled: busy !== '' || ak.trim() === '', onClick: saveAk },
-                    busy === 'ak' ? t('akSaving') : t('akSave'),
-                  ),
-                )
-              : null,
-            // 浏览器授权：没有 API Key 时的备选。默认折叠，避免和 API Key 抢主路径。
-            h(
-              Row,
-              { name: t('oauthTitle'), sub: t('oauthHint') },
-              // 已登录时这一行只是说明，不再给按钮（否则像是没登录成功）。
-              state === 'signed-in'
-                ? null
-                : h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'dsm-meoo-btn dsm-meoo-btn-sm',
-                      disabled: busy !== '',
-                      onClick: function () {
-                        doLogin(false);
-                      },
-                    },
-                    busy === 'login' || pending ? t('loggingIn') : t('loginNow'),
-                  ),
-            ),
-          ),
-          h(ProjectPanel, { t: t, doc: doc }),
-        );
-      }
-
-      /** 项目选择（多项目账号必用）。 */
-      function ProjectPanel(props) {
-        var t = props.t;
-        var doc = props.doc;
-        var projects = doc === undefined || doc.projects === undefined ? [] : doc.projects;
-        var active = doc === undefined || doc.activeProject === undefined ? undefined : String(doc.activeProject);
-
-        if (projects.length <= 1) {
-          var single = projects.length === 1 ? projects[0] : undefined;
-          return h(
-            Section,
-            { title: t('project'), desc: t('projectHint') },
-            h(Row, {
-              name: t('project'),
-              sub: single === undefined ? t('projectNone') : String(single.name) + ' (' + String(single.urlId) + ')',
-            }),
-          );
-        }
-        return h(
-          Section,
-          { title: t('project'), desc: t('projectHint') },
-          h(
-            Row,
-            { name: t('project'), sub: t('projectSwitch') },
-            h(
-              'select',
-              {
-                className: 'dsm-meoo-select',
-                value: active === undefined ? '' : active,
-                'aria-label': t('project'),
-                onChange: function (event) {
-                  void act('project', { projectUrlId: event.target.value });
-                },
-              },
-              projects.map(function (project) {
-                return h('option', { key: project.urlId, value: project.urlId }, project.name + ' (' + project.urlId + ')');
-              }),
-            ),
           ),
         );
       }

@@ -71,6 +71,10 @@ async function makeRuntime(options: {
     openBrowser: options.openBrowser ?? (() => undefined),
   });
   runtime.rememberStateSync(state);
+  // 必须把 DSH_HOME 指到临时目录：`readAuth()` / `persistAuth()` 默认读
+  // `process.env.DSH_HOME`，不设就会读写**这台机器真实的** `~/.dsh/meoo/state.json`。
+  // 症状是「本地已登录」时两条 signed-out 测试变红，而且测试会真的改到用户登录态。
+  process.env.DSH_HOME = options.home;
   return { runtime, saved };
 }
 

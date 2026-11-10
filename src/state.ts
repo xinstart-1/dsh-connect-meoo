@@ -15,6 +15,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { STATE_FILENAME } from './constants.ts';
+import { canonicalModelId } from './protocol/catalog.ts';
 
 /** 刷新间隔的五档（1 / 5 / 10 / 30 / 60 分钟）。 */
 export const POLL_INTERVAL_CHOICES: readonly number[] = Object.freeze([
@@ -65,7 +66,14 @@ export function normalizeState(raw: unknown): MeooPluginState {
   const record = raw as Record<string, unknown>;
 
   const disabled = Array.isArray(record.disabledModels)
-    ? record.disabledModels.filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+    ? [
+        // 旧版本写过无前缀的 kimi id，归一成官方 id，否则升级后禁用记录会失配。
+        ...new Set(
+          record.disabledModels
+            .filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+            .map((id) => canonicalModelId(id.trim())),
+        ),
+      ]
     : [];
 
   const interval = record.pollIntervalMs;

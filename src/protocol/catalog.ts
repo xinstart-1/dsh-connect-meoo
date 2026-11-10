@@ -61,6 +61,7 @@ const UNKNOWN_CONTEXT_WINDOW = 200_000;
 const UNKNOWN_MAX_TOKENS = 64_000;
 
 /** 规格表：id → 展示名 / 上下文 / 输出 / 是否多模态。 */
+// id 必须与官方 `/api/v1/agent/models` 的 `modelsValue[...]` 一致；任意一个对不上都会变成用户关不掉的幽灵模型。
 export const MODEL_SPECS: readonly MeooModel[] = Object.freeze([
   // 上下文 / 输出 / 多模态 / 价格档位全部对齐官网 `/api/v1/agent/models`（2026-11-10 实测）。
   // 网关 `/models` 只回裸 id，这些数字只能自己带；在线时会被官网接口覆盖。
@@ -71,17 +72,37 @@ export const MODEL_SPECS: readonly MeooModel[] = Object.freeze([
   { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek V4.1 Flash', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
   { id: 'deepseek-v4-pro-0813', name: 'DeepSeek V4 Pro', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'moderate' },
   { id: 'deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'cheap' },
-  { id: 'kimi-k3.1-pro', name: 'Kimi K3.1 Pro', contextWindow: 200_000, maxTokens: 16_384, vision: true, reasoning: true, price: 'veryExpensive' },
-  { id: 'kimi-k3', name: 'Kimi K3', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'veryExpensive' },
+  { id: 'moonshot/kimi-k3.1-pro', name: 'Kimi K3.1 Pro', contextWindow: 200_000, maxTokens: 16_384, vision: true, reasoning: true, price: 'veryExpensive' },
+  { id: 'moonshot/kimi-k3', name: 'Kimi K3', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'veryExpensive' },
   { id: 'MiniMax/MiniMax-M3.1-Flash', name: 'MiniMax M3.1 Flash', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
   { id: 'bigmodel/glm-5.3-flash', name: 'GLM-5.3-Flash', contextWindow: 200_000, maxTokens: 64_000, vision: true, reasoning: true, price: 'cheap' },
   { id: 'bigmodel/glm-5.3', name: 'GLM-5.3', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'expensive' },
   { id: 'glm-5.2-fast-preview', name: 'GLM-5.2-Fast', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'veryExpensive' },
   { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 200_000, maxTokens: 64_000, vision: false, reasoning: true, price: 'expensive' },
-  { id: 'qwen3-vl-plus', name: 'Qwen VL', contextWindow: 262_144, maxTokens: 32_768, vision: true, reasoning: true },
 ]);
 
 const SPEC_BY_ID = new Map(MODEL_SPECS.map((spec) => [spec.id, spec]));
+
+/**
+ * 旧版本规格表里写错过的 id → 现在的官方 id。
+ *
+ * 这两条 kimi 曾经漏了 `moonshot/` 前缀，而 `disabledModels` 是按 id 精确匹配的：
+ * 若某人在旧版本里关掉过它们，升级后那条禁用记录就再也匹配不上任何模型，
+ * 表现为「我明明关了，它又回来了」。映射掉，升级不丢用户选择。
+ */
+export const LEGACY_MODEL_ID_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  'kimi-k3.1-pro': 'moonshot/kimi-k3.1-pro',
+  'kimi-k3': 'moonshot/kimi-k3',
+});
+
+/**
+ * 把（可能是旧版本写下的）模型 id 归一成当前官方 id。
+ * @param id - 任意来源的 id。
+ * @returns 当前官方 id；认不出时原样返回。
+ */
+export function canonicalModelId(id: string): string {
+  return LEGACY_MODEL_ID_ALIASES[id] ?? id;
+}
 
 /**
  * 取一个 id 的规格；表外 id 给保守值。

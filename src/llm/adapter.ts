@@ -40,7 +40,7 @@ const THINKING_LEVELS = {
 } as const;
 
 /** 把一个目录条目变成 pi-ai 的 chat model。 */
-function toPiModel(info: MeooModel, baseUrl: string): Model<'openai-completions'> {
+export function toPiModel(info: MeooModel, baseUrl: string): Model<'openai-completions'> {
   return {
     id: info.id,
     name: info.name,
@@ -52,12 +52,17 @@ function toPiModel(info: MeooModel, baseUrl: string): Model<'openai-completions'
     contextWindow: info.contextWindow,
     maxTokens: info.maxTokens,
     reasoning: info.reasoning,
-    ...(info.reasoning
-      ? {
-          thinkingLevelMap: { ...THINKING_LEVELS },
-          compat: { supportsReasoningEffort: true },
-        }
-      : {}),
+    // 秒悟网关只接受 system/assistant/user/tool/function，发 `developer` 会 400：
+    // `developer is not one of ['system', 'assistant', 'user', 'tool', 'function']`。
+    // pi-ai 的自动探测按 baseUrl 白名单判断，`api.meoo.host` 不在名单里 → 默认 true →
+    // 带 reasoning 的模型会把 system 消息发成 developer。必须显式关掉。
+    compat: {
+      supportsDeveloperRole: false,
+      // 网关是 LiteLLM 风格：只认 `max_tokens`，不认 `max_completion_tokens`。
+      maxTokensField: 'max_tokens',
+      ...(info.reasoning ? { supportsReasoningEffort: true } : {}),
+    },
+    ...(info.reasoning ? { thinkingLevelMap: { ...THINKING_LEVELS } } : {}),
   };
 }
 

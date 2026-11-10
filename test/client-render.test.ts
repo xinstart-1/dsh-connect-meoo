@@ -103,7 +103,16 @@ function loadBundle(options = {}) {
     },
   };
 
-  const fetchStub = () => {
+  const fetchStub = (input: any, init?: any) => {
+    // 动作请求（POST …/action?action=…）走单独的桩：默认回 { ok: true }，
+    // 让「保存成功」这类分支可测；不关心返回值时用 options.actionResult 覆盖。
+    const url = typeof input === 'string' ? input : String(input?.url ?? input);
+    if (url.includes('/action') && (init?.method ?? '').toUpperCase() === 'POST') {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(options.actionResult ?? { ok: true, status: options.doc }),
+      });
+    }
     if (options.doc === undefined) return Promise.reject(new Error('offline'));
     return Promise.resolve({
       ok: true,
@@ -253,7 +262,7 @@ test('插件详情页能渲染出五个分栏的标题', async () => {
   }
 });
 
-test('未登录时账号栏渲染出登录入口，不崩', async () => {
+test('未登录时账号栏给 API Key 入口与说明，不崩', async () => {
   const bundle = await setup(
     fullDoc({
       login: { state: 'signed-out', source: 'none', hasServiceAk: false, canLogin: true },
@@ -264,7 +273,8 @@ test('未登录时账号栏渲染出登录入口，不崩', async () => {
   );
   const Page = componentOf(bundle.registered, 'plugins.bundle.config');
   const text = render(bundle, Page, { t: (key) => key, surface: 'detail' });
-  assert.ok(text.includes('loginNow'), '未登录必须有「登录」按钮');
+  assert.ok(text.includes('apiKeyTitle'), '未登录必须有 API Key 输入区');
+  assert.ok(text.includes('apiKeySave'), '必须有「保存并自动解析」按钮');
   assert.ok(text.includes('signedOutHint'), '未登录必须给说明文案');
 });
 
@@ -457,8 +467,8 @@ test('模型栏每个模型一个开关，aria-checked 与 enabled 一致', asyn
   const Page = Models;
   const tree = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
   const switches = collect(tree, (node) => node.type === 'button' && node.props?.role === 'switch', bundle.react);
-  // 模型 2 + 界面开关 2 + 「手动 AK」1 = 5（手动 AK 默认关，但它是个真实开关）。
-  assert.equal(switches.length, 5, '模型 2 个 + 界面 2 个 + 手动 AK 1 个，共 5 个开关');
+  // 模型 2 个 + 界面开关 2 个 = 4（手动 AK 开关已随「高级」节一起移除）。
+  assert.equal(switches.length, 4, '模型 2 个 + 界面 2 个，共 4 个开关');
   const checked = switches.map((node) => node.props['aria-checked']);
   // fullDoc：glm-5.2 停用，qwen3-vl-plus 停用 → 模型开关是 true/false；
   // 设置里 composerPill / sidebarPanel 都是 true。
@@ -622,7 +632,7 @@ test('项目服务 AK 不再是需要用户关心的状态行', async () => {
   assert.equal(text.includes('accountServiceAkMissing'), false, '不该再显示「未解析」');
 });
 
-test('手动 AK 输入框默认收起，藏在「高级」里', async () => {
+test('API Key 是唯一密码输入框（项目服务 AK 入口已移除）', async () => {
   const bundle = await setup(
     fullDoc({ login: { state: 'signed-out', source: 'none', hasServiceAk: false, canLogin: true } }),
   );
@@ -634,12 +644,15 @@ test('手动 AK 输入框默认收起，藏在「高级」里', async () => {
     (node) => node.type === 'input' && node.props?.type === 'password',
     bundle.react,
   );
-  assert.equal(passwordInputs.length, 1, '默认只该有 API Key 一个密码框，手动 AK 收起');
+  assert.equal(passwordInputs.length, 1, '页面上只该有 API Key 一个密码框');
   assert.equal(passwordInputs[0].props.placeholder, 'apiKeyPlaceholder');
 
   const text = renderText(tree, bundle.react);
-  assert.ok(text.includes('advancedTitle'), '要有「高级」这一节');
-  assert.ok(text.includes('akTitle'), '手动 AK 的开关要在（只是默认关）');
+  // 手填项目服务 AK、浏览器授权、项目选择都已删掉：填 API Key 就能全自动解析。
+  assert.equal(text.includes('advancedTitle'), false, '「高级」整节已移除');
+  assert.equal(text.includes('akTitle'), false, '手动指定项目服务 AK 已移除');
+  assert.equal(text.includes('oauthTitle'), false, '浏览器授权入口已移除');
+  assert.equal(text.includes('projectHint'), false, '项目选择已移除');
 });
 
 test('未登录时不显示「账号：未知 / 登录方式：无」两行空话', async () => {
@@ -692,22 +705,19 @@ test('模型行显示官网价格档位与夜间折扣', async () => {
 // 未登录时不该再摆「登录秒悟」主按钮，否则用户以为必须先登录。
 // ---------------------------------------------------------------------------
 
-test('未登录时账号区没有「登录秒悟」主按钮（API Key 才是主路径）', async () => {
+test('未登录时没有「登录秒悟」按钮，浏览器授权入口也一并移除', async () => {
   const bundle = await setup(
     fullDoc({ login: { state: 'signed-out', source: 'none', hasServiceAk: false, canLogin: true } }),
   );
   const Page = componentOf(bundle.registered, 'plugins.bundle.config');
   const tree = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
 
-  // loginNow 这个键仍然存在（「高级」里那个次要按钮要用它），
-  // 但页面上只该出现一次 —— 不能像改之前那样既在账号区标题又在高级里。
   const text = renderText(tree, bundle.react);
-  const occurrences = text.split('loginNow').length - 1;
-  assert.equal(occurrences, 1, '「登录秒悟」只该出现在高级区那一个次要按钮上');
-
-  // 但浏览器授权仍要可达（降级到「高级」），否则没 key 的用户无路可走。
-  assert.ok(text.includes('oauthTitle'), '「高级」里要有浏览器授权入口');
-  assert.ok(text.includes('advancedTitle'), '要有「高级」这一节');
+  // API Key 是唯一入口：OAuth 按钮、浏览器授权行、「高级」节全部移除。
+  assert.equal(text.includes('loginNow'), false, '不该再有「登录秒悟」按钮');
+  assert.equal(text.includes('oauthTitle'), false, '不该再有浏览器授权入口');
+  assert.equal(text.includes('advancedTitle'), false, '不该再有「高级」这一节');
+  assert.ok(text.includes('apiKeyTitle'), 'API Key 输入区必须在');
 });
 
 test('未登录提示指向 API Key，而不是让人去点登录', async () => {
@@ -719,11 +729,47 @@ test('未登录提示指向 API Key，而不是让人去点登录', async () => 
   assert.ok(text.includes('signedOutHint'), '要有未登录提示');
 });
 
-test('已登录时「高级」里的浏览器授权不再给按钮', async () => {
+test('已登录时也不出现登录按钮（API Key 是唯一路径）', async () => {
   const bundle = await setup(fullDoc());
   const Page = componentOf(bundle.registered, 'plugins.bundle.config');
   const tree = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
   const text = renderText(tree, bundle.react);
-  // 已登录仍显示这一行（说明来源），但不该再出现「登录秒悟」按钮。
-  assert.equal(text.includes('loginNow'), false, '已登录时不该有登录按钮');
+  assert.equal(text.includes('loginNow'), false, '不该有登录按钮');
+});
+
+// ---------------------------------------------------------------------------
+// API Key 保存必须有**可见**结果。
+// 起因：失败分支把错误写进只在「登录在途」才渲染的 codeMsg，
+// 未登录时点「保存并自动解析」界面毫无变化 —— 用户看到的就是「没生效」。
+// ---------------------------------------------------------------------------
+
+test('API Key 保存成功后渲染出解析结果（账号 / 积分 / 模型数）', async () => {
+  const bundle = await setup(
+    fullDoc({ login: { state: 'signed-out', source: 'none', hasServiceAk: false, canLogin: true } }),
+  );
+  const Page = componentOf(bundle.registered, 'plugins.bundle.config');
+  const first = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
+
+  const input = collect(
+    first,
+    (node) => node.type === 'input' && node.props?.type === 'password',
+    bundle.react,
+  )[0];
+  input.props.onChange({ target: { value: 'meoo_ak_test' } });
+
+  const second = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
+  const button = collect(
+    second,
+    (node) => node.type === 'button' && node.props?.onClick !== undefined,
+    bundle.react,
+  ).find((node) => node.props.className.includes('dsm-meoo-btn-primary'));
+  assert.ok(button !== undefined, '必须有主按钮');
+  button.props.onClick();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // fetch 桩固定返回 fullDoc（已登录 + 1234 分 + 2 模型），所以要看到成功文案。
+  const third = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
+  const text = renderText(third, bundle.react);
+  assert.ok(text.includes('apiKeyOk'), '成功后必须渲染出解析结果，不能只清空输入框');
+  assert.equal(text.includes('apiKeySave'), true, '按钮仍在（可继续换 key）');
 });

@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  canonicalModelId,
   DEFAULT_MODEL_ID,
   FALLBACK_CATALOG,
   MODEL_SPECS,
@@ -18,6 +19,7 @@ import {
   parseGatewayModels,
   specOf,
 } from '../src/protocol/catalog.ts';
+import { normalizeState } from '../src/state.ts';
 
 test('parseGatewayModels 认 {models:[...]} 包络', () => {
   const models = parseGatewayModels({
@@ -40,9 +42,9 @@ test('parseGatewayModels 认 {data:[...]} 包络', () => {
 });
 
 test('parseGatewayModels 认裸数组', () => {
-  const models = parseGatewayModels([{ id: 'qwen3-vl-plus' }]);
+  const models = parseGatewayModels([{ id: 'qwen3.8-flash' }]);
   assert.equal(models.length, 1);
-  assert.equal(models[0]?.vision, true, 'Qwen VL 是原生多模态');
+  assert.equal(models[0]?.vision, true, 'Qwen3.8 Flash 是原生多模态');
 });
 
 test('parseGatewayModels 丢掉缺 id 与重复 id 的条目', () => {
@@ -91,6 +93,43 @@ test('规格表里每个 id 都唯一且有正的上下文/输出上限', () => 
     assert.ok(spec.maxTokens > 0, `${spec.id} 的 maxTokens 必须为正`);
     assert.ok(spec.maxTokens <= spec.contextWindow, `${spec.id} 的输出上限不该超过上下文`);
   }
+});
+
+test('静态规格表与官方网关目录完全一致，不保留不可关闭的幽灵模型', () => {
+  const officialIds = [
+    'qwen3.8-flash',
+    'qwen3.8-max',
+    'qwen3.7-max',
+    'qwen3.7-plus',
+    'deepseek-v4.1-flash-1017',
+    'deepseek-v4-pro-0813',
+    'deepseek-v4-flash-0731',
+    'moonshot/kimi-k3.1-pro',
+    'moonshot/kimi-k3',
+    'MiniMax/MiniMax-M3.1-Flash',
+    'bigmodel/glm-5.3-flash',
+    'bigmodel/glm-5.3',
+    'glm-5.2-fast-preview',
+    'glm-5.2',
+  ];
+  const ids = MODEL_SPECS.map((model) => model.id).sort();
+  assert.deepEqual(ids, [...officialIds].sort());
+  assert.equal(ids.includes('qwen3-vl-plus'), false);
+  assert.equal(ids.includes('kimi-k3'), false);
+  assert.equal(ids.includes('kimi-k3.1-pro'), false);
+});
+
+test('禁用官方目录中其余模型后，只保留用户启用的模型', () => {
+  const enabledIds = new Set(['deepseek-v4.1-flash-1017', 'bigmodel/glm-5.3-flash']);
+  const disabledModels = MODEL_SPECS.filter((model) => !enabledIds.has(model.id)).map((model) => model.id);
+  const visibleModels = MODEL_SPECS.filter((model) => !disabledModels.includes(model.id));
+
+  assert.deepEqual(
+    visibleModels.map((model) => model.id),
+    ['deepseek-v4.1-flash-1017', 'bigmodel/glm-5.3-flash'],
+  );
+  assert.equal(visibleModels.some((model) => model.id.includes('kimi')), false);
+  assert.equal(visibleModels.some((model) => model.id === 'qwen3-vl-plus'), false);
 });
 
 test('FALLBACK_CATALOG 就是规格表，且非空', () => {
@@ -186,4 +225,21 @@ test('静态规格表的价格档位与官网一致（离线兜底也不瞎写�
   assert.equal(byId.get('qwen3.7-max')?.price, 'expensive');
   assert.equal(byId.get('deepseek-v4-pro-0813')?.price, 'moderate');
   assert.equal(byId.get('glm-5.2')?.price, 'expensive');
+});
+
+test('旧的 kimi 无前缀 id 归一成官方 id（升级不丢禁用选择）', () => {
+  // 旧版本规格表漏了 `moonshot/` 前缀，那时候点下的「关闭」存的就是无前缀 id。
+  assert.equal(canonicalModelId('kimi-k3'), 'moonshot/kimi-k3');
+  assert.equal(canonicalModelId('kimi-k3.1-pro'), 'moonshot/kimi-k3.1-pro');
+  // 已经是官方 id / 认不出的 id 必须原样返回，不能擅自改名。
+  assert.equal(canonicalModelId('moonshot/kimi-k3'), 'moonshot/kimi-k3');
+  assert.equal(canonicalModelId('glm-5.2'), 'glm-5.2');
+  assert.equal(canonicalModelId('brand-new-model'), 'brand-new-model');
+});
+
+test('normalizeState 归一旧 id 并去重', () => {
+  const state = normalizeState({
+    disabledModels: ['kimi-k3', 'moonshot/kimi-k3', 'kimi-k3.1-pro', ''],
+  });
+  assert.deepEqual(state.disabledModels, ['moonshot/kimi-k3', 'moonshot/kimi-k3.1-pro']);
 });

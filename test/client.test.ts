@@ -210,3 +210,34 @@ test('extractAuthorizationCode 能吃下整条回调地址与裸 code', async ()
   assert.equal(extractAuthorizationCode('http://127.0.0.1:1/oauth/callback?state=abc'), undefined, '没有 code 就是无效');
   assert.equal(extractAuthorizationCode('   '), undefined);
 });
+
+// ---------------------------------------------------------------------------
+// pi-ai 的 OpenAI 兼容层会自动把 system 消息换成 `developer` 角色（前提是
+// 它认为上游支持）。秒悟网关明确只接受 system/assistant/user/tool/function，
+// 发 developer 直接 400：
+//   developer is not one of ['system', 'assistant', 'user', 'tool', 'function']
+// 这条测试锁住「compat 必须显式关掉它」，否则换 pi-ai 版本或改 baseUrl 时
+// 会静默回归成「模型测试失败」。
+// ---------------------------------------------------------------------------
+
+test('pi-ai model 必须关掉 developer 角色，并只用 max_tokens', async () => {
+  const { toPiModel } = await import('../src/llm/adapter.ts');
+  const base = {
+    id: 'qwen3.8-flash',
+    name: 'Qwen3.8-Flash',
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+    vision: true,
+    reasoning: true,
+  };
+  const reasoningModel = toPiModel(base, 'https://api.meoo.host/meoo-ai/compatible-mode/v1');
+  assert.equal(reasoningModel.compat?.supportsDeveloperRole, false, '必须关掉 developer 角色');
+  assert.equal(reasoningModel.compat?.maxTokensField, 'max_tokens', '网关只认 max_tokens');
+  assert.equal(reasoningModel.compat?.supportsReasoningEffort, true, 'reasoning 模型要能发 reasoning_effort');
+  assert.deepEqual(reasoningModel.thinkingLevelMap, { low: 'low', medium: 'medium', high: 'high' });
+
+  const plainModel = toPiModel({ ...base, reasoning: false }, 'https://api.meoo.host/meoo-ai/compatible-mode/v1');
+  assert.equal(plainModel.compat?.supportsDeveloperRole, false, '非 reasoning 模型同样不能发 developer');
+  assert.equal(plainModel.compat?.supportsReasoningEffort, undefined, '非 reasoning 模型不发 reasoning_effort');
+  assert.equal(plainModel.thinkingLevelMap, undefined);
+});
