@@ -1,0 +1,26 @@
+# 依赖与构建产物
+node_modules/
+lib/
+*.tgz
+
+# 校验过程中的临时目录
+.pack-check/
+.smoke-home/
+
+# 测试报告（每次 gate 重新生成，不进版本库）
+test-report.txt
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+*.log
+
+# UI 预览的生成物：变体（亮色 / 未登录）与 HTML 由 scripts/preview-ui.mjs 现生成。
+# 仓库只留 README 引用的那几张暗色主图，避免 30 张截图把 diff 撑爆。
+docs/assets/preview/
+docs/assets/*-light*.png
+docs/assets/*-signedout*.png
+
+# DSH 附件（用户贴的截图，机器相关）
+.dsh-file-attachment/
+.scratch/
