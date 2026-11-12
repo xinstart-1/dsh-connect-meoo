@@ -431,6 +431,10 @@ export interface PointsGrantDetail {
   remaining: number;
   /** 这一批的到期日（`YYYY-MM-DD`，上游可能带时间）。 */
   expiresDate: string;
+  /** 来源（`DAILY_LOGIN` / `SUBSCRIPTION` / …）：签到判定用它区分「每日登录」批次。 */
+  sourceType?: string;
+  /** 这一批的生效时刻（`YYYY-MM-DDTHH:mm:ss`，上游原样）。 */
+  effectiveDate?: string;
 }
 
 /** 积分账户读数。 */
@@ -470,14 +474,21 @@ export function parsePoints(payload: unknown, nowMs: number = Date.now()): Point
   const grants: PointsGrantDetail[] = [];
   for (const grant of Array.isArray(root.activeGrants) ? root.activeGrants : []) {
     if (typeof grant !== 'object' || grant === null) continue;
-    const details = (grant as Record<string, unknown>).grantDetails;
+    const grantRow = grant as Record<string, unknown>;
+    const sourceType = typeof grantRow.sourceType === 'string' ? grantRow.sourceType : undefined;
+    const details = grantRow.grantDetails;
     for (const detail of Array.isArray(details) ? details : []) {
       if (typeof detail !== 'object' || detail === null) continue;
       const row = detail as Record<string, unknown>;
       const remaining = nonNegativeInt(row.remainingAmount);
       const expiresDate = typeof row.expiresDate === 'string' ? row.expiresDate.slice(0, 10) : '';
       if (remaining <= 0 || expiresDate === '') continue;
-      grants.push({ remaining, expiresDate });
+      grants.push({
+        remaining,
+        expiresDate,
+        ...(sourceType === undefined ? {} : { sourceType }),
+        ...(typeof row.effectiveDate === 'string' ? { effectiveDate: row.effectiveDate } : {}),
+      });
     }
   }
   grants.sort((a, b) => a.expiresDate.localeCompare(b.expiresDate));

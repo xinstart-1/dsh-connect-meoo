@@ -32,7 +32,23 @@ function fullDoc(overrides = {}) {
       { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 1_000_000, maxTokens: 128_000, vision: false, enabled: true },
       { id: 'qwen3-vl-plus', name: 'Qwen VL', contextWindow: 262_144, maxTokens: 32_768, vision: true, enabled: false },
     ],
-    settings: { pollIntervalMs: 300_000, composerPill: true, sidebarPanel: true, disabledModels: [] },
+    settings: { pollIntervalMs: 300_000, composerPill: true, sidebarPanel: true, disabledModels: [], checkinEnabled: true, checkinTime: '10:00' },
+    accounts: [
+      { id: 'cred_a', kind: 'apikey', name: '账号 A', masked: 'meoo_ak_…aaaa', active: true, savedAt: 1, hasServiceAk: true },
+      { id: 'cred_b', kind: 'oauth', name: '账号 B', masked: '…bbbb', active: false, savedAt: 2, hasServiceAk: true },
+    ],
+    activeAccountId: 'cred_a',
+    checkin: {
+      enabled: true,
+      time: '10:00',
+      lastRunAtMs: 1_700_000_000_000,
+      lastRunDate: '2026-11-12',
+      due: false,
+      records: [
+        { name: '账号 A', kind: 'apikey', status: 'unsupported', message: 'API Key 调用 /api/mc/entitlement/init 会得到 HTTP 403。', atMs: 1_700_000_000_000 },
+        { name: '账号 B', kind: 'oauth', status: 'already', amount: 2000, atMs: 1_700_000_000_000 },
+      ],
+    },
     gateway: 'https://api.meoo.host/meoo-ai/compatible-mode/v1',
     readAtMs: 1_700_000_000_000,
     ...overrides,
@@ -90,6 +106,7 @@ function makeReact() {
 function loadBundle(options = {}) {
   const react = makeReact();
   const registered = [];
+  const actionCalls: any[] = [];
   let exported;
 
   const window = {
@@ -108,6 +125,7 @@ function loadBundle(options = {}) {
     // 让「保存成功」这类分支可测；不关心返回值时用 options.actionResult 覆盖。
     const url = typeof input === 'string' ? input : String(input?.url ?? input);
     if (url.includes('/action') && (init?.method ?? '').toUpperCase() === 'POST') {
+      actionCalls.push({ url, body: init?.body });
       return Promise.resolve({
         ok: true,
         json: () => Promise.resolve(options.actionResult ?? { ok: true, status: options.doc }),
@@ -156,7 +174,7 @@ function loadBundle(options = {}) {
   };
   exported.apply(ctx);
 
-  return { module: exported, registered, react };
+  return { module: exported, registered, react, actionCalls };
 }
 
 /**
@@ -467,8 +485,8 @@ test('模型栏每个模型一个开关，aria-checked 与 enabled 一致', asyn
   const Page = Models;
   const tree = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
   const switches = collect(tree, (node) => node.type === 'button' && node.props?.role === 'switch', bundle.react);
-  // 模型 2 个 + 界面开关 2 个 = 4（手动 AK 开关已随「高级」节一起移除）。
-  assert.equal(switches.length, 4, '模型 2 个 + 界面 2 个，共 4 个开关');
+  // 模型 2 个 + 界面开关 2 个 + 每日签到 1 个 = 5。
+  assert.equal(switches.length, 5, '模型 2 个 + 界面 2 个 + 签到 1 个，共 5 个开关');
   const checked = switches.map((node) => node.props['aria-checked']);
   // fullDoc：glm-5.2 停用，qwen3-vl-plus 停用 → 模型开关是 true/false；
   // 设置里 composerPill / sidebarPanel 都是 true。
@@ -772,4 +790,52 @@ test('API Key 保存成功后渲染出解析结果（账号 / 积分 / 模型数
   const text = renderText(third, bundle.react);
   assert.ok(text.includes('apiKeyOk'), '成功后必须渲染出解析结果，不能只清空输入框');
   assert.equal(text.includes('apiKeySave'), true, '按钮仍在（可继续换 key）');
+});
+
+
+test('手动刷新按钮走 refresh 动作，而不是只重读缓存 /status', async () => {
+  const bundle = await setup(fullDoc());
+  const Page = componentOf(bundle.registered, 'plugins.bundle.config');
+  const tree = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
+  const buttons = collect(tree, (node) => node.type === 'button', bundle.react);
+  const refresh = buttons.find((node) => (node.children ?? []).join('') === 'refresh');
+  assert.ok(refresh !== undefined, '必须渲染出刷新按钮');
+  refresh.props.onClick();
+  assert.ok(
+    bundle.actionCalls.some((call) => String(call.url).includes('action=refresh')),
+    '刷新按钮必须 POST action=refresh（只 GET /status 会拿到宿主的缓存文档）',
+  );
+});
+
+test('令牌列表渲染当前/非当前令牌，切换按钮发出 account-switch', async () => {
+  const bundle = await setup(fullDoc());
+  const Page = componentOf(bundle.registered, 'plugins.bundle.config');
+  const tree = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
+  const text = renderText(tree, bundle.react);
+  assert.ok(text.includes('tokensTitle'), '必须渲染令牌列表标题');
+  assert.ok(text.includes('账号 A') && text.includes('账号 B'), '两个令牌都要出现');
+  assert.ok(text.includes('tokenActive'), '当前令牌要有标记');
+  const buttons = collect(tree, (node) => node.type === 'button', bundle.react);
+  const use = buttons.find((node) => (node.children ?? []).join('') === 'tokenUse');
+  assert.ok(use !== undefined, '非当前令牌要有切换按钮');
+  use.props.onClick();
+  const call = bundle.actionCalls.find((item) => String(item.url).includes('action=account-switch'));
+  assert.ok(call !== undefined, '切换按钮必须 POST account-switch');
+  assert.deepEqual(JSON.parse(String(call.body)), { id: 'cred_b' });
+});
+
+test('签到卡片显示逐令牌结果与立即签到按钮', async () => {
+  const bundle = await setup(fullDoc());
+  const Page = componentOf(bundle.registered, 'plugins.bundle.config');
+  const tree = mount(bundle, Page, { t: (key: string) => key, surface: 'detail' });
+  const text = renderText(tree, bundle.react);
+  assert.ok(text.includes('checkinTitle'), '必须渲染签到卡片');
+  assert.ok(text.includes('checkinUnsupported'), 'API Key 的如实结果要显示');
+  assert.ok(text.includes('checkinAlready'), '已领取结果要显示');
+  const buttons = collect(tree, (node) => node.type === 'button', bundle.react);
+  // 假 React 的 hook 槽在多次渲染间复用，busy 可能残留为 true；两种文案都算签到按钮。
+  const now = buttons.find((node) => ['checkinNow', 'checkinRunning'].includes((node.children ?? []).join('')));
+  assert.ok(now !== undefined, '必须有立即签到按钮');
+  now.props.onClick();
+  assert.ok(bundle.actionCalls.some((item) => String(item.url).includes('action=checkin')));
 });

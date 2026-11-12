@@ -19,12 +19,17 @@
 import { AUTH_FILENAME, AUTH_DIRNAME, GATEWAY_BASE, VERSION } from '../constants.ts';
 import {
   EMPTY_AUTH,
+  activateToken,
   authFile,
+  clearAuth,
   isApiKey,
   isServiceAk,
+  listTokens,
   readAuth,
   readLocalLogin,
+  removeToken,
   startLogin,
+  upsertToken,
   writeAuth,
   type LoginSession,
   type StoredAuth,
@@ -45,8 +50,18 @@ import {
 import type { MeooModel } from '../protocol/catalog.ts';
 import { FALLBACK_CATALOG } from '../protocol/catalog.ts';
 import { POLL_INTERVAL_CHOICES, type MeooPluginState } from '../state.ts';
-import { buildStatusDocument, type StatusDocument, type StatusModel, type StatusPoints } from './status.ts';
+import { buildStatusDocument, type StatusDocument, type StatusAccount, type StatusCheckin, type StatusModel, type StatusPoints } from './status.ts';
 import type { MeooAction } from './routes.ts';
+import {
+  EMPTY_CHECKIN,
+  isCheckinDue,
+  nextCheckinAt,
+  readCheckinState,
+  runCheckin,
+  shanghaiDate,
+  writeCheckinState,
+  type CheckinState,
+} from './checkin.ts';
 
 /** 一段带时间戳的缓存。 */
 interface Segment<T> {
@@ -136,6 +151,13 @@ export class MeooRuntime {
   private timer?: NodeJS.Timeout;
   private readers = 0;
   private disposed = false;
+  /** 每日签到状态（首次读盘后常驻内存）。 */
+  private checkin?: CheckinState;
+  private checkinTimer?: NodeJS.Timeout;
+  /** 在途签到（手动与定时不并发跑两遍）。 */
+  private checkinRunning?: Promise<CheckinState>;
+  /** 自动签到失败后的重试时刻；没有它，失败会在 due 判断下变成死循环。 */
+  private checkinRetryAt = 0;
 
   constructor(options: RuntimeOptions) {
     this.options = options;
@@ -162,6 +184,7 @@ export class MeooRuntime {
   dispose(): void {
     this.disposed = true;
     this.unschedule();
+    this.unscheduleCheckin();
     this.login?.cancel();
     this.login = undefined;
     this.loggingIn = false;
@@ -348,6 +371,8 @@ export class MeooRuntime {
     this.stateCache = state;
     // 间隔可能变了：重排定时器。
     if (this.readers > 0) this.schedule();
+    // 签到开关/时刻也可能变了：即使没有界面打开，签到也应该照常跑。
+    this.scheduleCheckin();
   }
 
   /** 改插件状态并让定时器跟着走。 */
@@ -355,7 +380,230 @@ export class MeooRuntime {
     const next = await this.options.saveState(patch);
     this.stateCache = next;
     if (patch.pollIntervalMs !== undefined) this.schedule();
+    if (patch.checkinEnabled !== undefined || patch.checkinTime !== undefined) this.scheduleCheckin();
     return next;
+  }
+
+  /** 读签到记录（首次读盘后常驻内存）。 */
+  private async loadCheckinState(): Promise<CheckinState> {
+    if (this.checkin !== undefined) return this.checkin;
+    try {
+      this.checkin = await readCheckinState();
+    } catch (error) {
+      this.options.warn(`读签到记录失败：${messageOf(error)}`);
+      this.checkin = { ...EMPTY_CHECKIN };
+    }
+    return this.checkin;
+  }
+
+  /** 取消下一次签到定时器。 */
+  private unscheduleCheckin(): void {
+    if (this.checkinTimer !== undefined) {
+      clearTimeout(this.checkinTimer);
+      this.checkinTimer = undefined;
+    }
+  }
+
+  /**
+   * 安排下一次签到。
+   *
+   * 没有界面打开也要转：签到是账号级动作，不是「打开卡片才发生」的界面效果。
+   * 定时器 `unref()`，不阻止进程退出。
+   */
+  private scheduleCheckin(): void {
+    this.unscheduleCheckin();
+    if (this.disposed) return;
+    const state = this.stateCache;
+    if (state === undefined || !state.checkinEnabled) return;
+    const now = this.now();
+    const due = isCheckinDue(this.checkin?.lastRunDate ?? null, state.checkinTime, now);
+    const delay = due
+      ? Math.max(1_000, this.checkinRetryAt > now ? this.checkinRetryAt - now : 1_000)
+      : Math.max(1_000, nextCheckinAt(state.checkinTime, now) - now);
+    const timer = setTimeout(() => {
+      this.checkinTimer = undefined;
+      void this.runCheckinNow(false)
+        .catch((error: unknown) => this.options.warn(`每日签到失败：${messageOf(error)}`))
+        .finally(() => this.scheduleCheckin());
+    }, delay);
+    timer.unref?.();
+    this.checkinTimer = timer;
+  }
+
+  /**
+   * 立刻给**所有**已保存令牌跑一遍签到/核对。
+   *
+   * @param force - 手动触发时忽略「今天已经跑过」；定时任务不忽略。
+   * @returns 最新的签到状态。
+   */
+  async runCheckinNow(force = false): Promise<CheckinState> {
+    if (this.checkinRunning !== undefined) return this.checkinRunning;
+    const running = this.performCheckin(force).finally(() => {
+      this.checkinRunning = undefined;
+    });
+    this.checkinRunning = running;
+    return running;
+  }
+
+  /** 签到的实际执行体。 */
+  private async performCheckin(force: boolean): Promise<CheckinState> {
+    const now = this.now();
+    const today = shanghaiDate(now);
+    const pluginState = this.stateCache ?? (await this.options.state());
+    this.stateCache = pluginState;
+    const existing = await this.loadCheckinState();
+    if (!force && existing.lastRunDate === today) return existing;
+    if (pluginState.checkinEnabled !== true && !force) return existing;
+
+    const auth = await this.loadAuth();
+    const records = listTokens(auth);
+    if (records.length === 0) {
+      const next: CheckinState = { version: 1, lastRunDate: today, lastRunAtMs: now, records: [] };
+      this.checkin = next;
+      await writeCheckinState(next);
+      this.checkinRetryAt = 0;
+      return next;
+    }
+
+    let result: Awaited<ReturnType<typeof runCheckin>>;
+    try {
+      result = await runCheckin(auth, now);
+    } catch (error) {
+      // 失败保留上次成功记录，30 分钟后再试；不要把 lastRunDate 写成今天，
+      // 否则「今天跑过」会把失败悄悄变成「已完成」。
+      this.checkinRetryAt = now + 30 * 60_000;
+      this.options.warn(`每日签到失败：${messageOf(error)}`);
+      throw error;
+    }
+    this.auth = result.auth;
+    await this.persistAuth();
+    const next: CheckinState = {
+      version: 1,
+      lastRunDate: today,
+      lastRunAtMs: now,
+      records: result.records.slice(-20),
+    };
+    this.checkin = next;
+    this.checkinRetryAt = 0;
+    await writeCheckinState(next);
+    // 积分/权益可能刚变：让卡片下一次读状态时重拉，而不是等 5 分钟轮询。
+    this.points = undefined;
+    return next;
+  }
+
+  /** 签到视图（不含凭据）。 */
+  private async checkinView(): Promise<StatusCheckin> {
+    const state = this.stateCache;
+    const record = await this.loadCheckinState();
+    const time = state?.checkinTime ?? '10:00';
+    return {
+      enabled: state?.checkinEnabled ?? true,
+      time,
+      ...(record.lastRunAtMs > 0 ? { lastRunAtMs: record.lastRunAtMs } : {}),
+      lastRunDate: record.lastRunDate,
+      due: (state?.checkinEnabled ?? true) && isCheckinDue(record.lastRunDate, time, this.now()),
+      records: record.records.map((entry) => ({
+        name: entry.name,
+        kind: entry.kind,
+        status: entry.status,
+        ...(entry.amount === undefined ? {} : { amount: entry.amount }),
+        ...(entry.message === undefined ? {} : { message: entry.message }),
+        atMs: entry.atMs,
+      })),
+    };
+  }
+
+  /** 令牌摘要视图（不含凭据）。 */
+  private accountsView(auth: StoredAuth): StatusAccount[] {
+    return listTokens(auth).map((token) => ({
+      id: token.id,
+      kind: token.kind,
+      name: token.name,
+      masked: token.masked,
+      active: token.active,
+      savedAt: token.savedAt,
+      hasServiceAk: token.hasServiceAk,
+    }));
+  }
+
+  /** 新令牌落盘后补跑一次签到（不阻塞保存动作）。 */
+  private queueCheckin(): void {
+    if (this.stateCache?.checkinEnabled === false) return;
+    void this.runCheckinNow(true).catch((error: unknown) => {
+      this.options.warn(`新令牌签到失败：${messageOf(error)}`);
+    });
+  }
+
+  /** 手动签到动作：跑全部令牌，然后把状态文档一起还给界面。 */
+  private async checkinAction(): Promise<unknown> {
+    try {
+      const state = await this.runCheckinNow(true);
+      return {
+        ok: true,
+        checkin: await this.checkinView(),
+        records: state.records,
+        status: await this.status(true),
+      };
+    } catch (error) {
+      return { ok: false, error: messageOf(error) };
+    }
+  }
+
+  /** 切换当前令牌。 */
+  private async switchAccount(body: Record<string, unknown>): Promise<unknown> {
+    const id = typeof body.id === 'string' ? body.id.trim() : '';
+    if (id === '') return { ok: false, error: '缺少令牌 id' };
+    const auth = await this.loadAuth();
+    const target = listTokens(auth).find((token) => token.id === id);
+    if (target === undefined) return { ok: false, error: '这个令牌不在列表里' };
+    if (auth.activeId === id) return { ok: true, status: await this.status(false) };
+
+    this.auth = activateToken(auth, id);
+    this.source = target.kind === 'apikey' ? 'apikey' : 'oauth';
+    this.invalidate();
+    this.lastError = undefined;
+    this.loginError = undefined;
+    await this.persistAuth();
+    try {
+      const current = this.auth;
+      const needsResolve =
+        current.serviceAk === null ||
+        current.serviceAk === undefined ||
+        current.serviceAk === '' ||
+        current.serviceAkProjectId !== current.projectUrlId;
+      await this.serviceAk(needsResolve);
+    } catch (error) {
+      // 切令牌本身成功了：AK 解析失败只记录，不要把状态退回上一个账号。
+      this.noteError(error);
+    }
+    return { ok: true, status: await this.status(true) };
+  }
+
+  /** 从列表里删掉一个令牌；删的是当前令牌就顺位切换。 */
+  private async removeAccount(body: Record<string, unknown>): Promise<unknown> {
+    const id = typeof body.id === 'string' ? body.id.trim() : '';
+    if (id === '') return { ok: false, error: '缺少令牌 id' };
+    const auth = await this.loadAuth();
+    if (!listTokens(auth).some((token) => token.id === id)) {
+      return { ok: false, error: '这个令牌不在列表里' };
+    }
+    this.auth = removeToken(auth, id);
+    this.invalidate();
+    this.lastError = undefined;
+    if (listTokens(this.auth).length === 0) {
+      this.source = 'none';
+      this.loginError = undefined;
+      await this.persistAuth();
+      return { ok: true, status: await this.status(true) };
+    }
+    this.source = (this.auth.apiKey ?? '') !== '' ? 'apikey' : 'oauth';
+    await this.persistAuth();
+    try {
+      await this.serviceAk(false);
+    } catch (error) {
+      this.noteError(error);
+    }
+    return { ok: true, status: await this.status(true) };
   }
 
   /**
@@ -364,7 +612,12 @@ export class MeooRuntime {
    * @returns 状态文档。
    */
   async status(force: boolean): Promise<StatusDocument> {
-    if (this.refreshing !== undefined) return this.refreshing;
+    if (this.refreshing !== undefined) {
+      // 后台轮询可能在途：非强制读直接复用它（这是缓存语义），
+      // 但**强制刷新不能**复用 —— 那等于「点了刷新，拿到的是刷新前的文档」。
+      if (!force) return this.refreshing;
+      await this.refreshing.catch(() => undefined);
+    }
     const running = this.collect(force).finally(() => {
       this.refreshing = undefined;
     });
@@ -483,7 +736,12 @@ export class MeooRuntime {
         composerPill: pluginState.composerPill,
         sidebarPanel: pluginState.sidebarPanel,
         disabledModels: pluginState.disabledModels,
+        checkinEnabled: pluginState.checkinEnabled,
+        checkinTime: pluginState.checkinTime,
       },
+      accounts: this.accountsView(auth),
+      ...(auth.activeId === null || auth.activeId === undefined ? {} : { activeAccountId: auth.activeId }),
+      checkin: await this.checkinView(),
       gateway: this.gateway(),
       ...(this.lastError === undefined ? {} : { lastError: this.lastError }),
       nowMs: this.now(),
@@ -522,6 +780,12 @@ export class MeooRuntime {
         return this.setApiKey(body);
       case 'ak':
         return this.setManualAk(body);
+      case 'account-switch':
+        return this.switchAccount(body);
+      case 'account-remove':
+        return this.removeAccount(body);
+      case 'checkin':
+        return this.checkinAction();
       case 'test-model':
         return this.testModel(body);
       default:
@@ -586,10 +850,22 @@ export class MeooRuntime {
         apiBaseUrl: this.currentAuth().apiBaseUrl,
         onToken: async (auth) => {
           const me = await fetchIdentity(auth);
-          auth.username = me.name ?? null;
-          auth.userId = me.userId ?? null;
-          if (me.projectUrlId !== undefined) auth.projectUrlId = me.projectUrlId;
-          return auth;
+          // 登录成功也写进多令牌列表：浏览器授权与 API Key 可以并存，
+          // 谁都不会把对方的令牌冲掉。
+          return upsertToken(await this.loadAuth(), {
+            kind: 'oauth',
+            apiKey: null,
+            accessToken: auth.accessToken ?? null,
+            refreshToken: auth.refreshToken ?? null,
+            accessExpiresAt: auth.accessExpiresAt ?? 0,
+            scope: auth.scope ?? null,
+            openid: auth.openid ?? null,
+            username: me.name ?? null,
+            userId: me.userId ?? null,
+            projectUrlId: me.projectUrlId ?? null,
+            serviceAk: null,
+            serviceAkProjectId: null,
+          });
         },
       });
       this.login = session;
@@ -624,6 +900,7 @@ export class MeooRuntime {
           // 授权后立刻把 AK 与目录解析出来，用户回到 DSH 就能直接选模型。
           await this.serviceAk(true);
           this.invalidate();
+          this.queueCheckin();
           await this.status(true);
         })
         .catch((error: unknown) => {
@@ -667,26 +944,12 @@ export class MeooRuntime {
     this.loginError = undefined;
     // 显式把每个 token 字段写成 null，而不是整份换成 EMPTY_AUTH：
     // EMPTY_AUTH 里没有写这些键，读出来是 undefined，与「清空」不是一回事。
-    this.auth = {
-      apiBaseUrl: this.currentAuth().apiBaseUrl,
-      accessToken: null,
-      refreshToken: null,
-      accessExpiresAt: 0,
-      scope: null,
-      openid: null,
-      username: null,
-      userId: null,
-      projectUrlId: null,
-      serviceAk: null,
-      serviceAkProjectId: null,
-      lastSyncAt: 0,
-      lastError: null,
-    };
+    this.auth = clearAuth(this.currentAuth());
     this.source = 'none';
     this.invalidate();
     this.lastError = undefined;
     await this.persistAuth();
-    return { ok: true, message: '已清除本插件保存的登录态' };
+    return { ok: true, message: '已移除全部令牌' };
   }
 
   /** 改界面开关（点一下即生效，不走保存）。 */
@@ -695,6 +958,8 @@ export class MeooRuntime {
     if (typeof body.pollIntervalMs === 'number') patch.pollIntervalMs = body.pollIntervalMs;
     if (typeof body.composerPill === 'boolean') patch.composerPill = body.composerPill;
     if (typeof body.sidebarPanel === 'boolean') patch.sidebarPanel = body.sidebarPanel;
+    if (typeof body.checkinEnabled === 'boolean') patch.checkinEnabled = body.checkinEnabled;
+    if (typeof body.checkinTime === 'string') patch.checkinTime = body.checkinTime;
     if (Array.isArray(body.disabledModels)) {
       patch.disabledModels = body.disabledModels.filter((id): id is string => typeof id === 'string');
     }
@@ -704,6 +969,8 @@ export class MeooRuntime {
       composerPill: next.composerPill,
       sidebarPanel: next.sidebarPanel,
       disabledModels: next.disabledModels,
+      checkinEnabled: next.checkinEnabled,
+      checkinTime: next.checkinTime,
     } };
   }
 
@@ -775,16 +1042,22 @@ export class MeooRuntime {
       const serviceAk = await resolveServiceAk(probe, projectUrlId);
 
       // 4) 全部成功才落盘，避免半成品登录态。
-      this.auth = {
-        ...probe,
+      //    写进多令牌列表（同一个 key 重复粘贴 = 更新那一项），而不是覆盖整份文件：
+      //    用户之前保存的其它令牌必须还在。
+      this.auth = upsertToken(previous, {
+        kind: 'apikey',
+        apiKey: raw,
+        accessToken: null,
+        refreshToken: null,
+        accessExpiresAt: 0,
         username: me.name ?? null,
         userId: me.userId ?? null,
         projectUrlId,
         serviceAk,
         serviceAkProjectId: projectUrlId,
-        lastSyncAt: this.now(),
-        lastError: null,
-      };
+      });
+      this.auth.lastSyncAt = this.now();
+      this.auth.lastError = null;
       this.source = 'apikey';
       this.loginError = undefined;
       await this.persistAuth();
@@ -792,6 +1065,7 @@ export class MeooRuntime {
       const models = await this.fetchCatalog(serviceAk);
       if (models.length > 0) this.models = { value: models, at: this.now() };
       this.projects = { value: projects, at: this.now() };
+      this.queueCheckin();
       return { ok: true, project: projectUrlId, models: models.length, status: await this.status(true) };
     } catch (error) {
       return { ok: false, error: messageOf(error) };

@@ -98,7 +98,7 @@ Authorization: Bearer <项目服务 AK>
    且**保留文件里不认识的字段**（降级不丢数据）。
 7. 凭据绝不进浏览器半边：页面只拿 `/plugins/dsh-connect-meoo/status` 的归一数据，
    所有写操作走动作白名单（`refresh` / `login` / `login-code` / `logout` / `settings` /
-   `project` / `apikey` / `ak` / `test-model`）。
+   `project` / `apikey` / `ak` / `account-switch` / `account-remove` / `checkin` / `test-model`）。
 8. **不给 `off` 思考档**：上游不提供「关闭思考」，硬塞 `reasoning_effort: none` 只会 400。
 
 ---
@@ -107,19 +107,20 @@ Authorization: Bearer <项目服务 AK>
 
 | workbuddy 有 | 本插件 | 原因 |
 | --- | --- | --- |
-| 多账号池 + 自动换号 | 没有 | 一个 Meoo 账号一份 OAuth token；换号需要重新授权，不是「切换」 |
-| 每日签到 | 没有 | **已取证**：8 条签到类路径全部 404，与「必然不存在」的对照组同码；而 4 个已知端点全返回 401。见 `scripts/probe-endpoints.mjs` |
+| 多账号池 + 自动换号 | **有** | `state.json` 的 `credentials[]` + `activeId`；卡片切换/移除，顶层字段镜像当前令牌，旧读法不坏 |
+| 每日签到 | **有（每日登录积分）** | 没有独立 check-in 路由（8 条 404，对照组 401/404 同码）；每日登录赠送走网页会话 `POST /api/mc/entitlement/init`，API Key 打它会 **403 API_KEY_ROUTE_FORBIDDEN**。OAuth 主动领取，API Key 只核对。见 `docs/PROTOCOL.md` 六之二 |
 | 生图 / 生视频工具 | 没有 | 本插件的网关是文本补全网关；生图能力未取证（标「待验证」，不写「不支持」） |
 | 模型倍率徽标 | **有等价物** | 官网模型选择器的「便宜/适中/较贵/超贵」四档点阵 + 夜间折扣胶囊，取自 `/api/v1/agent/models` |
 | 伪装客户端指纹 | **不做** | 用的是官方「AI 服务」网关的公开契约，不需要伪装 |
 | 回环 shim | 没有 | 网关本身 OpenAI 兼容 |
 
-> **「签到接口不存在」是怎么证出来的**（不是读第三方实现猜的）：
+> **「没有独立签到路由」是怎么证出来的**（不是读第三方实现猜的）：
 > `probe-endpoints.mjs` 同时打三组路径 ——
 > 4 个已知端点（对照，全 401 = 存在）、8 条签到候选、1 条必然不存在的路径（对照）。
 > 结果：签到候选全部 404，与「必然不存在」的对照组同码。
 > 只看到 404 还不够，必须同时看到对照组 401，否则分不清「没有这条路由」与
-> 「整个控制面都不通」。这正是项目记忆里那条「不许说上游限制」要求的证据形态。
+> 「整个控制面都不通」。每日登录赠送另有取证：网页会话 `POST /api/mc/entitlement/init`
+> 返回 200 + `dailyLoginGranted`，同一接口用 API Key 是 403。
 
 ---
 

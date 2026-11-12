@@ -50,12 +50,51 @@ export interface StatusModel {
   discount?: { label: number; start: string; end: string };
 }
 
+/** 一份已保存令牌的视图（**不含**完整凭据）。 */
+export interface StatusAccount {
+  id: string;
+  kind: 'apikey' | 'oauth';
+  /** 账号名，拿不到时是脱敏标签。 */
+  name: string;
+  /** 脱敏后的凭据（`meoo_ak_…abcd`）。 */
+  masked: string;
+  active: boolean;
+  savedAt: number;
+  hasServiceAk: boolean;
+}
+
+/** 一个令牌的签到结果视图。 */
+export interface StatusCheckinRecord {
+  name: string;
+  kind: 'apikey' | 'oauth';
+  status: 'granted' | 'already' | 'unsupported' | 'failed';
+  /** 今天这一批每日登录积分的剩余额度。 */
+  amount?: number;
+  /** 失败/不支持时的原文。 */
+  message?: string;
+  atMs: number;
+}
+
+/** 每日签到视图。 */
+export interface StatusCheckin {
+  enabled: boolean;
+  /** `HH:MM`（北京时间）。 */
+  time: string;
+  lastRunAtMs?: number;
+  lastRunDate?: string | null;
+  /** 现在是否已经过了今天的点、且今天还没跑过。 */
+  due: boolean;
+  records: StatusCheckinRecord[];
+}
+
 /** 界面开关视图（渲染当前值，改动走动作路由）。 */
 export interface StatusSettings {
   pollIntervalMs: number;
   composerPill: boolean;
   sidebarPanel: boolean;
   disabledModels: string[];
+  checkinEnabled: boolean;
+  checkinTime: string;
 }
 
 /** 登录态视图。 */
@@ -101,6 +140,12 @@ export interface StatusDocument {
   activeProject?: string;
   models: StatusModel[];
   settings: StatusSettings;
+  /** 已保存的全部令牌（多令牌切换用）。 */
+  accounts: StatusAccount[];
+  /** 当前令牌 id。 */
+  activeAccountId?: string;
+  /** 每日签到状态。 */
+  checkin: StatusCheckin;
   /** 网关地址（诊断里显示）。 */
   gateway: string;
   /** 整份文档里**最旧**一段数据的时刻。 */
@@ -118,6 +163,9 @@ export interface StatusInput {
   activeProject?: string;
   models: StatusModel[];
   settings?: StatusSettings;
+  accounts?: StatusAccount[];
+  activeAccountId?: string;
+  checkin?: StatusCheckin;
   gateway: string;
   lastError?: string;
   nowMs?: number;
@@ -129,6 +177,8 @@ const DEFAULT_SETTINGS: StatusSettings = {
   composerPill: true,
   sidebarPanel: false,
   disabledModels: [],
+  checkinEnabled: true,
+  checkinTime: '10:00',
 };
 
 /**
@@ -150,6 +200,14 @@ export function buildStatusDocument(input: StatusInput): StatusDocument {
     ...(input.activeProject === undefined ? {} : { activeProject: input.activeProject }),
     models: input.models,
     settings: input.settings ?? { ...DEFAULT_SETTINGS },
+    accounts: input.accounts ?? [],
+    ...(input.activeAccountId === undefined ? {} : { activeAccountId: input.activeAccountId }),
+    checkin: input.checkin ?? {
+      enabled: false,
+      time: DEFAULT_SETTINGS.checkinTime,
+      due: false,
+      records: [],
+    },
     gateway: input.gateway,
     readAtMs: now,
     ...(input.lastError === undefined || input.lastError === '' ? {} : { lastError: input.lastError }),

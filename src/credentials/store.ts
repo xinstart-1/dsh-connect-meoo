@@ -35,8 +35,47 @@ import {
   REFRESH_REUSE_MS,
 } from '../constants.ts';
 
+/**
+ * 一份可切换的令牌。
+ *
+ * 为什么把每个字段都列全而不是只存 `apiKey`：切换令牌不只是换一行 Bearer ——
+ * 项目、项目服务 AK、账号名、积分归属都跟着变。把「跟这个令牌绑定的事实」
+ * 一起存，切过去就能立刻发请求，不用再等一轮身份/项目解析。
+ *
+ * `id` 一旦落盘就不再变（OAuth 续期换了 token 也认同一个 id）；UI 只拿它做
+ * 选择，不拿它当凭据。
+ */
+export interface StoredCredential {
+  id: string;
+  /** `apikey` 只有控制面 API Key；`oauth` 才有 access/refresh token。 */
+  kind: 'apikey' | 'oauth';
+  apiKey?: string | null;
+  accessToken?: string | null;
+  refreshToken?: string | null;
+  accessExpiresAt?: number;
+  scope?: string | null;
+  openid?: string | null;
+  username?: string | null;
+  userId?: string | null;
+  projectUrlId?: string | null;
+  serviceAk?: string | null;
+  serviceAkProjectId?: string | null;
+  /** 加进列表的时刻（ms）。 */
+  savedAt: number;
+}
+
 /** 落盘的登录态。 */
 export interface StoredAuth {
+  /**
+   * 多令牌列表。
+   *
+   * 旧文件没有这个字段：读到旧文件时按「一个令牌」迁移（见 {@link normalizeAuth}），
+   * 下次写入才落成新形状。这样降级回旧版本时，顶层 `apiKey` / `accessToken`
+   * 仍然指向当前令牌，`dsh-meoo-connect` 也还能读。
+   */
+  credentials?: StoredCredential[];
+  /** 当前生效的令牌 id；没有令牌时为 null。 */
+  activeId?: string | null;
   /** 登录用的主站（续期与控制面都打它）。 */
   apiBaseUrl: string;
   /** 网关地址（跟着账号走，方便换测试环境）。 */
@@ -132,15 +171,100 @@ function numberOr(value: unknown, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/** 归一化一份令牌；一个凭据都没有时返回 undefined。 */
+function normalizeCredential(raw: unknown, fallbackId: string): StoredCredential | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const record = raw as Record<string, unknown>;
+  const apiKey = stringOrNull(record.apiKey);
+  const accessToken = stringOrNull(record.accessToken);
+  const refreshToken = stringOrNull(record.refreshToken);
+  if (apiKey === null && accessToken === null && refreshToken === null) return undefined;
+
+  // 有 access/refresh 就是 OAuth；只有 apiKey 就是 API Key。显式 kind 优先，
+  // 因为一次失败的 OAuth 续期可能只剩 refreshToken（仍然是 OAuth 槽位）。
+  const kind: StoredCredential['kind'] =
+    record.kind === 'oauth' || record.kind === 'apikey'
+      ? record.kind
+      : accessToken === null && refreshToken === null
+        ? 'apikey'
+        : 'oauth';
+
+  return {
+    id: stringOrNull(record.id) ?? fallbackId,
+    kind,
+    apiKey,
+    accessToken,
+    refreshToken,
+    accessExpiresAt: numberOr(record.accessExpiresAt, 0),
+    scope: stringOrNull(record.scope),
+    openid: stringOrNull(record.openid),
+    username: stringOrNull(record.username),
+    userId: stringOrNull(record.userId),
+    projectUrlId: stringOrNull(record.projectUrlId),
+    serviceAk: stringOrNull(record.serviceAk),
+    serviceAkProjectId: stringOrNull(record.serviceAkProjectId),
+    savedAt: numberOr(record.savedAt, 0),
+  };
+}
+
 /**
- * 归一化任意形状的登录态（兼容 dsh-meoo-connect 的字段名）。
+ * 把一份令牌的字段铺到顶层。
+ *
+ * 顶层字段是**当前令牌的镜像**：运行时的全部逻辑（读积分、解析 AK、发请求）
+ * 仍然只认顶层，不需要知道多令牌列表存在。切令牌 = 换一份镜像。
+ */
+function applyCredential(auth: StoredAuth, credential: StoredCredential): StoredAuth {
+  return {
+    ...auth,
+    apiKey: credential.apiKey ?? null,
+    accessToken: credential.accessToken ?? null,
+    refreshToken: credential.refreshToken ?? null,
+    accessExpiresAt: credential.accessExpiresAt ?? 0,
+    scope: credential.scope ?? null,
+    openid: credential.openid ?? null,
+    username: credential.username ?? null,
+    userId: credential.userId ?? null,
+    projectUrlId: credential.projectUrlId ?? null,
+    serviceAk: credential.serviceAk ?? null,
+    serviceAkProjectId: credential.serviceAkProjectId ?? null,
+    credentials: auth.credentials,
+    activeId: credential.id,
+  };
+}
+
+/** 从顶层字段造一份令牌（旧单令牌文件迁移用）。 */
+function credentialFromAuth(auth: StoredAuth, id: string): StoredCredential | undefined {
+  const apiKey = stringOrNull(auth.apiKey);
+  const accessToken = stringOrNull(auth.accessToken);
+  const refreshToken = stringOrNull(auth.refreshToken);
+  if (apiKey === null && accessToken === null && refreshToken === null) return undefined;
+  return {
+    id,
+    kind: apiKey !== null ? 'apikey' : 'oauth',
+    apiKey,
+    accessToken,
+    refreshToken,
+    accessExpiresAt: typeof auth.accessExpiresAt === 'number' ? auth.accessExpiresAt : 0,
+    scope: auth.scope ?? null,
+    openid: auth.openid ?? null,
+    username: auth.username ?? null,
+    userId: auth.userId ?? null,
+    projectUrlId: auth.projectUrlId ?? null,
+    serviceAk: auth.serviceAk ?? null,
+    serviceAkProjectId: auth.serviceAkProjectId ?? null,
+    savedAt: typeof auth.lastSyncAt === 'number' ? auth.lastSyncAt : 0,
+  };
+}
+
+/**
+ * 归一化任意形状的登录态（兼容 dsh-meoo-connect 的字段名与旧单令牌文件）。
  * @param raw - 读到的对象。
  * @returns 合法登录态。
  */
 export function normalizeAuth(raw: unknown): StoredAuth {
   if (typeof raw !== 'object' || raw === null) return { ...EMPTY_AUTH };
   const record = raw as Record<string, unknown>;
-  return {
+  const base: StoredAuth = {
     apiBaseUrl: stringOrNull(record.apiBaseUrl) ?? stringOrNull(record.apiBase) ?? API_BASE,
     ...(stringOrNull(record.gatewayBaseUrl) === null
       ? {}
@@ -159,6 +283,176 @@ export function normalizeAuth(raw: unknown): StoredAuth {
     lastSyncAt: numberOr(record.lastSyncAt, 0),
     lastError: stringOrNull(record.lastError),
   };
+
+  const list: StoredCredential[] = [];
+  for (const entry of Array.isArray(record.credentials) ? record.credentials : []) {
+    const credential = normalizeCredential(entry, `cred_${String(list.length + 1)}`);
+    if (credential !== undefined && !list.some((item) => item.id === credential.id)) {
+      list.push(credential);
+    }
+  }
+
+  if (list.length > 0) {
+    const wanted = stringOrNull(record.activeId);
+    const active = list.find((item) => item.id === wanted) ?? list[0]!;
+    return applyCredential({ ...base, credentials: list }, active);
+  }
+
+  // 旧文件：一个顶层凭证。迁移成「一个令牌」的列表，id 固定为 cred_legacy，
+  // 这样在第一次写入之前，界面上看到的选择项不会每次读盘都换一个 id。
+  const legacy = credentialFromAuth(base, 'cred_legacy');
+  if (legacy !== undefined) return { ...base, credentials: [legacy], activeId: legacy.id };
+  return base;
+}
+
+/** 读一份令牌列表；旧登录态（没有列表）按一条迁移。 */
+export function tokensOf(auth: StoredAuth): StoredCredential[] {
+  if (Array.isArray(auth.credentials)) return auth.credentials;
+  const legacy = credentialFromAuth(auth, 'cred_legacy');
+  return legacy === undefined ? [] : [legacy];
+}
+
+/** 随机令牌 id（只用于选择，不作凭据）。 */
+export function newCredentialId(): string {
+  return `cred_${randomBytes(6).toString('hex')}`;
+}
+
+/**
+ * 新增或更新一份令牌，并把它设为当前令牌。
+ *
+ * 去重键按类型不同：API Key 用 key 本身（同一个 key 重复粘贴不该多一项），
+ * OAuth 用 openid / userId（续期换了 access token 仍是同一个账号）。
+ *
+ * @param auth - 当前登录态。
+ * @param input - 令牌字段（id 可省略）。
+ * @returns 更新后的登录态（当前令牌 = 传入的这份）。
+ */
+export function upsertToken(
+  auth: StoredAuth,
+  input: Omit<StoredCredential, 'savedAt' | 'id'> & { id?: string; savedAt?: number },
+): StoredAuth {
+  const list = [...tokensOf(auth)];
+  const apiKey = stringOrNull(input.apiKey);
+  const accessToken = stringOrNull(input.accessToken);
+  const refreshToken = stringOrNull(input.refreshToken);
+  const openid = stringOrNull(input.openid);
+  const userId = stringOrNull(input.userId);
+  const index = list.findIndex((item) => {
+    if (input.id !== undefined && input.id !== '' && item.id === input.id) return true;
+    // 只在同一种令牌内去重：同一个账号的 API Key 与 OAuth token 是**两份能力不同**
+    // 的凭据（OAuth 能领每日积分，API Key 不能），不能因为 userId 相同就互相覆盖。
+    if (input.kind === 'apikey') {
+      return item.kind === 'apikey' && apiKey !== null && stringOrNull(item.apiKey) === apiKey;
+    }
+    if (item.kind !== 'oauth') return false;
+    if (accessToken !== null && stringOrNull(item.accessToken) === accessToken) return true;
+    if (refreshToken !== null && stringOrNull(item.refreshToken) === refreshToken) return true;
+    return (openid !== null && item.openid === openid) || (userId !== null && item.userId === userId);
+  });
+  const existing = index >= 0 ? list[index] : undefined;
+  const credential: StoredCredential = {
+    ...existing,
+    ...input,
+    id: existing?.id ?? (input.id !== undefined && input.id !== '' ? input.id : newCredentialId()),
+    savedAt: existing?.savedAt !== undefined && existing.savedAt > 0 ? existing.savedAt : (input.savedAt ?? Date.now()),
+    apiKey,
+    accessToken,
+    refreshToken,
+    accessExpiresAt: typeof input.accessExpiresAt === 'number' ? input.accessExpiresAt : 0,
+    scope: stringOrNull(input.scope),
+    openid,
+    userId,
+    projectUrlId: stringOrNull(input.projectUrlId),
+    serviceAk: stringOrNull(input.serviceAk),
+    serviceAkProjectId: stringOrNull(input.serviceAkProjectId),
+    username: stringOrNull(input.username),
+  };
+  if (index >= 0) list[index] = credential;
+  else list.push(credential);
+  return applyCredential({ ...auth, credentials: list }, credential);
+}
+
+/** 切换到一份已保存的令牌；id 不存在时原样返回。 */
+export function activateToken(auth: StoredAuth, id: string): StoredAuth {
+  const list = tokensOf(auth);
+  const credential = list.find((item) => item.id === id);
+  if (credential === undefined) return auth;
+  return applyCredential({ ...auth, credentials: list }, credential);
+}
+
+/** 清空登录态，但保留主站地址。 */
+export function clearAuth(auth: StoredAuth): StoredAuth {
+  return {
+    apiBaseUrl: auth.apiBaseUrl,
+    ...(auth.gatewayBaseUrl === undefined ? {} : { gatewayBaseUrl: auth.gatewayBaseUrl }),
+    apiKey: null,
+    accessToken: null,
+    refreshToken: null,
+    accessExpiresAt: 0,
+    scope: null,
+    openid: null,
+    username: null,
+    userId: null,
+    projectUrlId: null,
+    serviceAk: null,
+    serviceAkProjectId: null,
+    lastSyncAt: 0,
+    lastError: null,
+    credentials: [],
+    activeId: null,
+  };
+}
+
+/** 删除一份令牌；删的是当前令牌时顺位切到第一份，列表空了就清空登录态。 */
+export function removeToken(auth: StoredAuth, id: string): StoredAuth {
+  const list = tokensOf(auth).filter((item) => item.id !== id);
+  if (list.length === 0) return clearAuth(auth);
+  const active = list.find((item) => item.id === auth.activeId) ?? list[0]!;
+  return applyCredential({ ...auth, credentials: list }, active);
+}
+
+/** 给浏览器看的令牌摘要（**不含**任何完整凭据）。 */
+export interface CredentialSummary {
+  id: string;
+  kind: 'apikey' | 'oauth';
+  /** 展示名：账号名优先，否则用一个脱敏标签。 */
+  name: string;
+  /** 脱敏后的凭据（只留可辨认的前缀与末 4 位）。 */
+  masked: string;
+  active: boolean;
+  savedAt: number;
+  hasServiceAk: boolean;
+}
+
+/** 脱敏：API Key 保留 `meoo_ak_…` 与末 4 位；OAuth 只留末 4 位。 */
+export function maskToken(value: string | null | undefined): string {
+  const token = typeof value === 'string' ? value.trim() : '';
+  if (token === '') return '—';
+  const tail = token.length > 4 ? token.slice(-4) : '';
+  if (token.startsWith('meoo_ak_')) return `meoo_ak_…${tail}`;
+  if (token.startsWith('meoo_project_service_v1.')) return `service_ak_…${tail}`;
+  return `…${tail}`;
+}
+
+/**
+ * 列出令牌摘要。
+ * @param auth - 登录态。
+ * @returns 摘要（当前令牌 `active=true`）。
+ */
+export function listTokens(auth: StoredAuth): CredentialSummary[] {
+  const list = tokensOf(auth);
+  return list.map((item) => {
+    const masked = item.kind === 'apikey' ? maskToken(item.apiKey) : maskToken(item.accessToken ?? item.refreshToken);
+    return {
+      id: item.id,
+      kind: item.kind,
+      name: item.username !== null && item.username !== undefined && item.username !== '' ? item.username : masked,
+      masked,
+      active: item.id === (auth.activeId ?? (list.length === 1 ? list[0]!.id : '')),
+      savedAt: item.savedAt,
+      hasServiceAk: stringOrNull(item.serviceAk) !== null,
+    };
+  });
 }
 
 /**
@@ -209,12 +503,43 @@ export async function writeAuth(
   const file = authFile(env);
   const previous = (await readJsonFile(file)) ?? {};
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-  const merged = { ...previous, ...stripUndefined(auth) };
+  const merged = { ...previous, ...stripUndefined(syncActiveToken(auth)) };
   const temporary = `${file}.tmp`;
   await writeFile(temporary, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
   await rename(temporary, file);
   // rename 保留的是临时文件的权限；显式再设一次，Windows 上无害、POSIX 上是保险。
   await chmod(file, 0o600).catch(() => undefined);
+}
+
+/**
+ * 写盘前把顶层镜像同步回当前令牌。
+ *
+ * 运行时会就地改顶层字段（续期换 token、解析出新的 serviceAk），如果不同步，
+ * 切走再切回来就会拿到一份旧 AK。
+ */
+function syncActiveToken(auth: StoredAuth): StoredAuth {
+  if (!Array.isArray(auth.credentials)) return auth;
+  if (auth.credentials.length === 0) return { ...auth, activeId: null };
+  const activeId = auth.activeId ?? auth.credentials[0]!.id;
+  const credentials = auth.credentials.map((item) =>
+    item.id === activeId
+      ? {
+          ...item,
+          apiKey: auth.apiKey ?? null,
+          accessToken: auth.accessToken ?? null,
+          refreshToken: auth.refreshToken ?? null,
+          accessExpiresAt: typeof auth.accessExpiresAt === 'number' ? auth.accessExpiresAt : 0,
+          scope: auth.scope ?? null,
+          openid: auth.openid ?? null,
+          username: auth.username ?? null,
+          userId: auth.userId ?? null,
+          projectUrlId: auth.projectUrlId ?? null,
+          serviceAk: auth.serviceAk ?? null,
+          serviceAkProjectId: auth.serviceAkProjectId ?? null,
+        }
+      : item,
+  );
+  return { ...auth, activeId, credentials };
 }
 
 /** 去掉值为 undefined 的键（JSON 里它们本来也会消失，但合并前去掉更直观）。 */

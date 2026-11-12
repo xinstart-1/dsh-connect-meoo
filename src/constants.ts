@@ -13,7 +13,7 @@
 export const PROVIDER = 'meoo';
 
 /** 插件版本号（卡片与日志显示）。与 package.json 的 version 保持一致。 */
-export const VERSION = '0.0.6';
+export const VERSION = '0.0.7';
 
 /** 设置页命名空间（插件设置卡片的挂载点）。 */
 export const SETTINGS_NS = 'meoo';
@@ -94,3 +94,9 @@ export const STATE_FILENAME = 'dsh-connect-meoo-state.json';
 export const AUTH_DIRNAME = 'meoo';
 /** 登录态文件名。 */
 export const AUTH_FILENAME = 'state.json';
+
+/** 每日签到记录文件名（与登录态同目录，但不含任何凭据）。 */
+export const CHECKIN_FILENAME = 'checkin.json';
+
+/** 网页会话领取每日登录积分的接口（API Key 访问会返回 403）。 */
+export const DAILY_GRANT_PATH = '/api/mc/entitlement/init';

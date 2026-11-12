@@ -270,6 +270,27 @@
     sourceAk: '手填项目服务 AK',
     sourceApiKey: 'API Key',
     sourceNone: '无',
+    tokensTitle: '已保存的令牌',
+    tokensHint: '每个令牌是一个独立账号；切换后项目、积分与服务 AK 会一起切换。',
+    tokensEmpty: '还没有保存多个令牌。在上面再贴一个 API Key，或走一次浏览器授权。',
+    tokenActive: '当前',
+    tokenUse: '切换',
+    tokenSwitching: '切换中…',
+    tokenRemove: '移除',
+    tokenRemoveConfirm: '移除这个令牌？它不会退出该账号的网页登录。',
+    checkinTitle: '每日登录积分',
+    checkinHint: '秒悟按账号每天发放 2000 积分（7 天有效）。插件每天为所有已保存令牌核对一次；OAuth 令牌会主动领取。',
+    checkinEnabled: '每天自动签到所有令牌',
+    checkinTime: '签到时刻',
+    checkinTimeHint: '北京时间（UTC+8）。到点后即使没打开这个面板也会跑。',
+    checkinNow: '立即签到',
+    checkinRunning: '签到中…',
+    checkinLast: '上次签到 {time}',
+    checkinNever: '今天还没有跑过签到。',
+    checkinGranted: '已领取 +{amount}',
+    checkinAlready: '今日已领取 · 余 {amount}',
+    checkinUnsupported: 'API Key 需网页登录',
+    checkinFailed: '签到失败',
     loginNow: '登录秒悟',
     loggingIn: '授权中…',
     loginPending: '等待浏览器授权…',
@@ -409,6 +430,27 @@
     sourceAk: 'Pasted project AK',
     sourceApiKey: 'API key',
     sourceNone: 'None',
+    tokensTitle: 'Saved tokens',
+    tokensHint: 'Each token is its own account; switching also switches its project, points and service AK.',
+    tokensEmpty: 'No extra tokens yet. Paste another API key above, or complete one browser sign-in.',
+    tokenActive: 'Active',
+    tokenUse: 'Use',
+    tokenSwitching: 'Switching…',
+    tokenRemove: 'Remove',
+    tokenRemoveConfirm: 'Remove this token? This does not sign the account out on the web.',
+    checkinTitle: 'Daily login points',
+    checkinHint: 'Meoo grants 2000 points per account per day (valid 7 days). Every saved token is checked daily; OAuth tokens are claimed actively.',
+    checkinEnabled: 'Check in every saved token daily',
+    checkinTime: 'Check-in time',
+    checkinTimeHint: 'Beijing time (UTC+8). It runs even when this panel is closed.',
+    checkinNow: 'Check in now',
+    checkinRunning: 'Checking in…',
+    checkinLast: 'Last check-in {time}',
+    checkinNever: 'No check-in has run today.',
+    checkinGranted: 'Claimed +{amount}',
+    checkinAlready: 'Already claimed today · {amount} left',
+    checkinUnsupported: 'API key needs a web session',
+    checkinFailed: 'Check-in failed',
     loginNow: 'Sign in to Meoo',
     loggingIn: 'Authorising…',
     loginPending: 'Waiting for browser…',
@@ -854,6 +896,199 @@
         return t('accountSignedOut');
       }
 
+      /** 已保存的令牌列表：切换 / 移除（不显示完整凭据）。 */
+      function TokensPanel(props) {
+        var t = props.t;
+        var doc = useSnapshot();
+        var busyState = React.useState('');
+        var busy = busyState[0];
+        var setBusy = busyState[1];
+        var accounts = doc !== undefined && Array.isArray(doc.accounts) ? doc.accounts : [];
+
+        function switchTo(id) {
+          setBusy(id);
+          void act('account-switch', { id: id }).then(function () {
+            setBusy('');
+          });
+        }
+
+        function remove(id) {
+          var ask =
+            typeof window !== 'undefined' && typeof window.confirm === 'function'
+              ? window.confirm(t('tokenRemoveConfirm'))
+              : true;
+          if (!ask) return;
+          setBusy(id);
+          void act('account-remove', { id: id }).then(function () {
+            setBusy('');
+          });
+        }
+
+        return h(
+          Section,
+          { title: t('tokensTitle'), desc: t('tokensHint') },
+          accounts.length === 0
+            ? h('p', { className: 'dsm-meoo-hint' }, t('tokensEmpty'))
+            : accounts.map(function (account) {
+                return h(
+                  'div',
+                  { className: 'dsm-meoo-row', key: String(account.id) },
+                  h(
+                    'div',
+                    { className: 'dsm-meoo-row-main' },
+                    h(
+                      'div',
+                      { className: 'dsm-meoo-row-name' },
+                      h(Dot, { tone: account.active === true ? 'ok' : 'idle' }),
+                      String(account.name),
+                      account.active === true ? h(Chip, { tone: 'ok' }, t('tokenActive')) : null,
+                    ),
+                    h(
+                      'div',
+                      { className: 'dsm-meoo-row-sub' },
+                      String(account.masked) + ' · ' + (account.kind === 'oauth' ? t('sourceOauth') : t('sourceApiKey')),
+                    ),
+                  ),
+                  h(
+                    'div',
+                    { className: 'dsm-meoo-row-side' },
+                    account.active === true
+                      ? null
+                      : h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'dsm-meoo-btn dsm-meoo-btn-sm',
+                            disabled: busy !== '',
+                            onClick: function () {
+                              switchTo(String(account.id));
+                            },
+                          },
+                          busy === account.id ? t('tokenSwitching') : t('tokenUse'),
+                        ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dsm-meoo-btn dsm-meoo-btn-sm dsm-meoo-btn-quiet',
+                        disabled: busy !== '',
+                        onClick: function () {
+                          remove(String(account.id));
+                        },
+                      },
+                      t('tokenRemove'),
+                    ),
+                  ),
+                );
+              }),
+        );
+      }
+
+      /** 签到结果 → 短标签。 */
+      function checkinLabel(t, record) {
+        var amount = typeof record.amount === 'number' ? num(record.amount) : '—';
+        if (record.status === 'granted') return t('checkinGranted', { amount: amount });
+        if (record.status === 'already') return t('checkinAlready', { amount: amount });
+        if (record.status === 'unsupported') return t('checkinUnsupported');
+        return t('checkinFailed');
+      }
+
+      /** 每日登录积分：开关、时刻、立即签到、逐令牌结果。 */
+      function CheckinPanel(props) {
+        var t = props.t;
+        var doc = useSnapshot();
+        var busyState = React.useState(false);
+        var busy = busyState[0];
+        var setBusy = busyState[1];
+        var checkin = doc !== undefined && doc.checkin !== undefined ? doc.checkin : {};
+        var enabled = checkin.enabled !== false;
+        var time = typeof checkin.time === 'string' ? checkin.time : '10:00';
+        var records = Array.isArray(checkin.records) ? checkin.records : [];
+        var times = ['10:00', '12:00', '18:00', '20:00'];
+
+        function runCheckin() {
+          setBusy(true);
+          void act('checkin').then(function () {
+            setBusy(false);
+          });
+        }
+
+        return h(
+          Section,
+          { title: t('checkinTitle'), desc: t('checkinHint') },
+          h(
+            Row,
+            { name: t('checkinEnabled') },
+            h(Switch, {
+              checked: enabled,
+              label: t('checkinEnabled'),
+              onChange: function (next) {
+                void act('settings', { checkinEnabled: next });
+              },
+            }),
+          ),
+          h(
+            Row,
+            { name: t('checkinTime'), sub: t('checkinTimeHint') },
+            h(Segmented, {
+              label: t('checkinTime'),
+              value: time,
+              options: times.map(function (value) {
+                return { value: value, label: value };
+              }),
+              onChange: function (next) {
+                void act('settings', { checkinTime: String(next) });
+              },
+            }),
+          ),
+          h(
+            'div',
+            { className: 'dsm-meoo-actions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dsm-meoo-btn dsm-meoo-btn-sm',
+                disabled: busy,
+                onClick: runCheckin,
+              },
+              busy ? t('checkinRunning') : t('checkinNow'),
+            ),
+            typeof checkin.lastRunAtMs === 'number'
+              ? h('span', { className: 'dsm-meoo-row-sub' }, t('checkinLast', { time: clock(checkin.lastRunAtMs) }))
+              : null,
+          ),
+          records.length === 0
+            ? h('p', { className: 'dsm-meoo-hint' }, t('checkinNever'))
+            : records.map(function (record, index) {
+                var tone =
+                  record.status === 'granted' || record.status === 'already'
+                    ? 'ok'
+                    : record.status === 'unsupported'
+                      ? 'warn'
+                      : 'err';
+                return h(
+                  'div',
+                  { className: 'dsm-meoo-row', key: String(record.name) + ':' + String(index) },
+                  h(
+                    'div',
+                    { className: 'dsm-meoo-row-main' },
+                    h(
+                      'div',
+                      { className: 'dsm-meoo-row-name' },
+                      String(record.name),
+                      h(Chip, { tone: tone }, checkinLabel(t, record)),
+                    ),
+                    record.message === undefined
+                      ? null
+                      : h('div', { className: 'dsm-meoo-row-sub' }, String(record.message)),
+                  ),
+                  h('div', { className: 'dsm-meoo-row-side' }, clock(record.atMs)),
+                );
+              }),
+        );
+      }
+
       /** 账号栏：登录态 + 登录/退出。 */
       function AccountPanel(props) {
         var t = props.t;
@@ -1139,6 +1374,8 @@
                 )
               : null,
           ),
+          h(TokensPanel, { t: t }),
+          h(CheckinPanel, { t: t }),
         );
       }
 
@@ -1703,7 +1940,10 @@
             disabled: busy,
             onClick: function () {
               setBusy(true);
-              void load(true).then(function () {
+              // 手动刷新必须走宿主的 `refresh` 动作（force=true）。
+              // 只调 `load(true)` 是重新读一次 /status，宿主那边仍是缓存文档 ——
+              // 用户看到的就是「点了刷新，积分还是旧的」（实测复现）。
+              void act('refresh').then(function () {
                 setBusy(false);
               });
             },

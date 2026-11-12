@@ -42,6 +42,10 @@ export interface MeooPluginState {
   composerPill: boolean;
   /** 侧边栏入口（占全局座位，默认关）。 */
   sidebarPanel: boolean;
+  /** 每天自动为**所有**已保存令牌核对/领取一次每日登录积分。 */
+  checkinEnabled: boolean;
+  /** 自动签到时刻（`HH:MM`，北京时间 UTC+8）。 */
+  checkinTime: string;
 }
 
 /** 默认状态。 */
@@ -51,6 +55,8 @@ export const DEFAULT_STATE: MeooPluginState = Object.freeze({
   pollIntervalMs: 300_000,
   composerPill: true,
   sidebarPanel: false,
+  checkinEnabled: true,
+  checkinTime: '10:00',
 }) as MeooPluginState;
 
 /**
@@ -91,6 +97,13 @@ export function normalizeState(raw: unknown): MeooPluginState {
       typeof record.composerPill === 'boolean' ? record.composerPill : DEFAULT_STATE.composerPill,
     sidebarPanel:
       typeof record.sidebarPanel === 'boolean' ? record.sidebarPanel : DEFAULT_STATE.sidebarPanel,
+    checkinEnabled:
+      typeof record.checkinEnabled === 'boolean' ? record.checkinEnabled : DEFAULT_STATE.checkinEnabled,
+    // 封闭格式：写坏的 '25:00' / '9:5' 一律回落到默认，别让定时器去算一个不存在的时刻。
+    checkinTime:
+      typeof record.checkinTime === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(record.checkinTime.trim())
+        ? record.checkinTime.trim()
+        : DEFAULT_STATE.checkinTime,
   };
 }
 

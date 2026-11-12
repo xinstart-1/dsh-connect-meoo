@@ -60,6 +60,14 @@ export function toPiModel(info: MeooModel, baseUrl: string): Model<'openai-compl
       supportsDeveloperRole: false,
       // 网关是 LiteLLM 风格：只认 `max_tokens`，不认 `max_completion_tokens`。
       maxTokensField: 'max_tokens',
+      // 缓存优化（实测见 docs/PROTOCOL.md）：网关的自动前缀缓存能命中 99%+，
+      // 但它是多节点的 —— 让 pi-ai 带上会话亲和头，同一个会话尽量落到同一节点，
+      // 别让「同一段前缀」在两个节点上各冷一遍。网关不认识这些头时会直接忽略。
+      sendSessionAffinityHeaders: true,
+      sessionAffinityFormat: 'openai',
+      // 网关接受 `prompt_cache_retention: "24h"`（实测 HTTP 200，重复前缀命中
+      // 4352/4441 tokens）；开启长保留让隔一段时间回来的会话仍能命中。
+      supportsLongCacheRetention: true,
       ...(info.reasoning ? { supportsReasoningEffort: true } : {}),
     },
     ...(info.reasoning ? { thinkingLevelMap: { ...THINKING_LEVELS } } : {}),
@@ -126,6 +134,9 @@ export function createMeooAdapter(options: MeooAdapterOptions): MeooAdapter {
     provider: providerKey,
     displayName: DISPLAY_NAME,
     streamIdleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+    // 与 compat.supportsLongCacheRetention 配套：pi-ai 只在 cacheRetention='long'
+    // 且 compat 允许时发送 `prompt_cache_key`（会话 id）与 24h 保留。
+    cacheRetention: 'long',
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-connect-meoo retryPolicy'),
     configuredMaxTokens: new Map<string, number>(),
     modelErrors: new Map<string, string>(),

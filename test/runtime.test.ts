@@ -55,7 +55,9 @@ async function makeRuntime(options: {
   openBrowser?: (url: string) => boolean | void;
 }): Promise<{ runtime: MeooRuntime; saved: MeooPluginState[] }> {
   const saved: MeooPluginState[] = [];
-  let state: MeooPluginState = { ...DEFAULT_STATE, ...options.state };
+  // 测试默认关掉自动签到：它会在动作之后异步落盘，和临时目录清理抢跑。
+  // 签到本身的逻辑由 checkin.test.ts 与下面的 checkin 动作测试单独覆盖。
+  let state: MeooPluginState = { ...DEFAULT_STATE, checkinEnabled: false, ...options.state };
   const runtime = new MeooRuntime({
     state: async () => state,
     saveState: async (patch) => {
@@ -452,4 +454,142 @@ test('apikey 动作拒绝乱填的前缀，且不写坏已有登录态', async (
   const doc = await runtime.status(true);
   assert.equal(doc.login.state, 'signed-out', '失败不能把状态弄成已登录');
   runtime.dispose();
+});
+
+
+/** 写一份自定义登录态（多令牌用）。 */
+async function writeAuthDoc(home: string, doc: unknown): Promise<void> {
+  await mkdir(join(home, 'meoo'), { recursive: true });
+  await writeFile(authFile({ DSH_HOME: home }), JSON.stringify(doc), 'utf8');
+}
+
+test('强制刷新会绕过缓存拿到新积分（手动刷新积分 bug 回归）', async () => {
+  const home = await freshHome();
+  await writeLogin(home);
+  process.env.DSH_HOME = home;
+  let balance = 888;
+  stubFetch([
+    {
+      match: (url) => url.includes('/account/points'),
+      get body() {
+        return { account: { availableBalance: balance, totalConsumed: 0 } };
+      },
+    },
+    { match: (url) => url.includes('/projects?'), body: { list: [{ url_id: 'proj-1', name: '项目' }] } },
+    { match: (url) => url.endsWith('/models'), body: { models: [{ id: 'glm-5.2' }] } },
+  ]);
+  const { runtime } = await makeRuntime({ home, state: { checkinEnabled: false } });
+  try {
+    const first = await runtime.status(true);
+    assert.equal(first.points.state === 'ok' ? first.points.available : -1, 888);
+
+    balance = 4321;
+    const cached = await runtime.status(false);
+    assert.equal(cached.points.state === 'ok' ? cached.points.available : -1, 888, '非强制读仍走缓存');
+
+    const refreshed = (await runtime.run('refresh', {})) as { ok: boolean; status: { points: { available: number } } };
+    assert.equal(refreshed.ok, true);
+    assert.equal(refreshed.status.points.available, 4321, 'refresh 动作必须真的重拉积分');
+  } finally {
+    runtime.dispose();
+  }
+});
+
+test('多令牌：切换当前账号，再删除它，状态与列表同步', async () => {
+  const home = await freshHome();
+  await writeAuthDoc(home, {
+    apiBaseUrl: 'https://meoo.com',
+    apiKey: 'meoo_ak_aaaa',
+    username: '账号 A',
+    projectUrlId: 'proj-1',
+    serviceAk: 'meoo_project_service_v1.a',
+    serviceAkProjectId: 'proj-1',
+    credentials: [
+      {
+        id: 'cred_a',
+        kind: 'apikey',
+        apiKey: 'meoo_ak_aaaa',
+        username: '账号 A',
+        projectUrlId: 'proj-1',
+        serviceAk: 'meoo_project_service_v1.a',
+        serviceAkProjectId: 'proj-1',
+        savedAt: 1,
+      },
+      {
+        id: 'cred_b',
+        kind: 'apikey',
+        apiKey: 'meoo_ak_bbbb',
+        username: '账号 B',
+        projectUrlId: 'proj-2',
+        serviceAk: 'meoo_project_service_v1.b',
+        serviceAkProjectId: 'proj-2',
+        savedAt: 2,
+      },
+    ],
+    activeId: 'cred_a',
+  });
+  process.env.DSH_HOME = home;
+  stubFetch([
+    { match: (url) => url.includes('/account/points'), body: { account: { availableBalance: 10, totalConsumed: 0 }, activeGrants: [] } },
+    { match: (url) => url.includes('/projects?'), body: { list: [{ url_id: 'proj-1', name: '项目一' }, { url_id: 'proj-2', name: '项目二' }] } },
+    { match: (url) => url.endsWith('/models'), body: { models: [{ id: 'glm-5.2' }] } },
+  ]);
+  const { runtime } = await makeRuntime({ home, state: { checkinEnabled: false } });
+  try {
+    const before = await runtime.status(true);
+    assert.equal(before.accounts.length, 2);
+    assert.equal(before.activeAccountId, 'cred_a');
+    assert.equal(before.login.name, '账号 A');
+
+    const switched = (await runtime.run('account-switch', { id: 'cred_b' })) as {
+      ok: boolean;
+      status: { activeAccountId: string; login: { name?: string }; accounts: Array<{ id: string; active: boolean }> };
+    };
+    assert.equal(switched.ok, true);
+    assert.equal(switched.status.activeAccountId, 'cred_b');
+    assert.equal(switched.status.login.name, '账号 B');
+    assert.equal(switched.status.accounts.find((item) => item.active)?.id, 'cred_b');
+
+    const removed = (await runtime.run('account-remove', { id: 'cred_b' })) as {
+      ok: boolean;
+      status: { activeAccountId: string; accounts: Array<{ id: string }> };
+    };
+    assert.equal(removed.ok, true);
+    assert.equal(removed.status.accounts.length, 1);
+    assert.equal(removed.status.activeAccountId, 'cred_a');
+  } finally {
+    runtime.dispose();
+  }
+});
+
+test('checkin 动作逐个令牌跑，并把结果放进状态文档', async () => {
+  const home = await freshHome();
+  await writeAuthDoc(home, {
+    apiBaseUrl: 'https://meoo.com',
+    apiKey: 'meoo_ak_checkin_test',
+    username: '签到账号',
+    projectUrlId: 'proj-1',
+    serviceAk: 'meoo_project_service_v1.checkin',
+    serviceAkProjectId: 'proj-1',
+  });
+  process.env.DSH_HOME = home;
+  stubFetch([
+    { match: (url) => url.includes('/account/points'), body: { account: { availableBalance: 4321, totalConsumed: 0 }, activeGrants: [] } },
+    { match: (url) => url.includes('/projects?'), body: { list: [{ url_id: 'proj-1', name: '项目' }] } },
+    { match: (url) => url.endsWith('/models'), body: { models: [{ id: 'glm-5.2' }] } },
+  ]);
+  const { runtime } = await makeRuntime({ home, state: { checkinEnabled: false, checkinTime: '10:00' } });
+  try {
+    const result = (await runtime.run('checkin', {})) as {
+      ok: boolean;
+      records: Array<{ status: string }>;
+      status: { checkin: { records: Array<{ status: string }> } };
+    };
+    assert.equal(result.ok, true);
+    assert.equal(result.records.length, 1);
+    assert.equal(result.records[0]?.status, 'unsupported');
+    assert.equal(result.status.checkin.records[0]?.status, 'unsupported');
+  } finally {
+    runtime.dispose();
+  }
 });
