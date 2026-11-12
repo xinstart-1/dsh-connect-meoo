@@ -259,22 +259,25 @@ compat: { supportsDeveloperRole: false, maxTokensField: 'max_tokens', … }
 
 ---
 
-## 六之二、签到接口不存在（带对照组的取证）
+## 六之二、没有独立签到路由；每日登录积分走网页会话
 
-workbuddy 有每日签到，Meoo 有没有？**没有。** 这不是读第三方实现猜的，
-而是直接问上游并带对照组：
+workbuddy 有每日签到，Meoo 有没有？**没有独立的 check-in 路由**，但**有每日登录赠送**
+（`daily_login`，2000 分，7 天有效）。两件事要分开取证：
 
-| 组 | 路径 | 实测 |
-| --- | --- | --- |
-| 已知存在（对照） | `account/identity`、`account/points`、`account/entitlement`、`projects` | **全部 401** |
-| 必然不存在（对照） | `definitely-not-a-real-route-xyz` | **404** |
-| 签到候选（8 条） | `account/checkin`、`account/check-in`、`account/signin`、`account/sign-in`、`account/daily`、`account/daily-checkin`、`checkin`、`points/checkin` | **全部 404** |
+| 组 | 路径 | 方法 | 实测（2026-11-12） |
+| --- | --- | --- | --- |
+| 已知存在（对照） | `account/identity`、`account/points`、`account/entitlement`、`projects` | GET | **401**（路由存在，缺凭据） |
+| 必然不存在（对照） | `definitely-not-a-real-route-xyz` | GET | **404** |
+| 签到候选（8 条） | `account/checkin`、`account/check-in`、`account/signin`、`account/sign-in`、`account/daily`、`account/daily-checkin`、`checkin`、`points/checkin` | GET | **全部 404** |
+| 每日登录领取 | `/api/mc/entitlement/init` | POST | 浏览器会话 **200**，返回 `dailyLoginGranted` / `dailyLoginGrantAmount`；API Key **403** `API_KEY_ROUTE_FORBIDDEN` |
+| 同接口（API Key + CLI 头） | `/api/mc/entitlement/init` | POST | **403**，原文 `API Key 不允许访问此接口` |
 
-**判据**：401 = 路由存在只是缺凭据；404 = 路由不存在。
-签到候选的 404 与「必然不存在」的对照组同码，而对照组 401 证明控制面本身是通的。
+**判据**：401 = 路由存在只是缺凭据；404 = 路由不存在。签到候选的 404 与「必然不存在」
+的对照组同码，而对照组 401 证明控制面本身是通的。`/api/mc/entitlement/init` 不是签到
+路由，是网页端启动时的权益初始化接口；它只认浏览器会话，API Key 被显式拒绝。
 
-**为什么必须有对照组**：只看 404 分不清「没有这条路由」与「整个控制面都不通」。
-项目记忆里那条「不许说上游限制」，要求的就是这种形态的证据。
+**插件据此实现**：OAuth 令牌真的调这个接口并回读积分确认；API Key 只读批次、如实报
+`unsupported`（附 403 原文），不伪造成功。每个账号每天一次，多令牌逐个跑。
 
 复现：`node scripts/probe-endpoints.mjs`（联网，不花钱）。
 

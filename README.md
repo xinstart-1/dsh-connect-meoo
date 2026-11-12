@@ -124,6 +124,28 @@ dsh-connect-meoo (Host)
 - **复用本机登录态**：若你装过 `dsh-meoo-connect` 或 `meoo-proxy`，插件会**只读**
   复用它们已保存的登录态（一个字节都不写回）。
 
+## 多令牌与每日登录积分
+
+- **多令牌**：卡片「已保存的令牌」里列出全部账号，点「切换」换当前令牌；「移除」只删
+  本地这一份，不会退出网页。令牌存 `$DSH_HOME/meoo/state.json` 的 `credentials[]`，
+  顶层字段仍镜像当前令牌，所以旧的单令牌读法（包括 `dsh-meoo-connect`）不会坏。
+- **每日登录积分**：秒悟按账号每天发放 2000 积分（7 天有效）。插件在设定的时刻
+  （默认 10:00，北京时间）为**所有**已保存令牌核对一次：OAuth 令牌会主动调
+  `POST /api/mc/entitlement/init` 领取；API Key 只能读积分批次，领取出上游返回
+  `HTTP 403 API_KEY_ROUTE_FORBIDDEN`（这是接口的会话限制，不是插件没做）。
+  结果落在 `$DSH_HOME/meoo/checkin.json`，卡片里逐条显示「已领取 / 今日已有 /
+  API Key 需网页登录 / 失败」，不把「核对」写成「领取成功」。
+- **手动刷新**：右上角「刷新」现在走宿主 `refresh` 动作强制重拉；旧版只重读
+  `/status` 缓存，所以会出现「官网积分已经变了，卡片还是旧数字」。
+
+## 缓存命中
+
+pi-ai 的兼容项里加了会话亲和（`sendSessionAffinityHeaders` +
+`sessionAffinityFormat: 'openai'`）与长缓存保留（`supportsLongCacheRetention` +
+`cacheRetention: 'long'`），让同一会话尽量落到同一网关节点，并带
+`prompt_cache_key` / `prompt_cache_retention: 24h`。实测见 `docs/PROTOCOL.md`：
+同一段 4.4K tokens 前缀重复请求命中 4352/4441（98%），12K tokens 重复命中 99.8%。
+
 ## 安装
 
 dsh 的插件装在 **profile** 里（本机 Web GUI 用 `desktop` 或 `web`）。
@@ -197,7 +219,8 @@ dsh plugin --profile desktop add file:X:/Agent/deepseek插件/dsh-connect-meoo
 ## 风险与边界
 
 - 用的是 Meoo **官方「AI 服务」网关**，鉴权就是账号的项目服务 AK；每次调用消耗
-  **你自己账号**的积分，插件不绕过任何计费、不刷额度、不碰账号状态。
+  **你自己账号**的积分。自动签到只为自己已保存的账号领取官方每日登录积分，
+  不绕过计费、不伪造领取结果、不碰别人的账号。
 - 插件**只读**别人的登录态文件（`dsh-meoo-connect` / `meoo-proxy`），写只写自己的。
 - 凭据只留在本机（`$DSH_HOME/meoo/state.json`，权限 600），**不进浏览器页面**：
   页面只拿宿主归一好的展示数据，所有写操作走动作白名单。

@@ -31,6 +31,9 @@ export type MeooAction =
   | 'project' // 换项目（body 为 { projectUrlId }）
   | 'apikey' // 手填控制面 API Key（body 为 { apiKey }），自动换出项目服务 AK
   | 'ak' // 手填项目服务 AK（body 为 { serviceAk }）
+  | 'account-switch' // 切换当前令牌（body 为 { id }）
+  | 'account-remove' // 删除一个令牌（body 为 { id }）
+  | 'checkin' // 立刻给所有令牌跑一遍每日登录积分核对/领取
   | 'test-model'; // 测单个模型此刻可用性（body 为 { modelId }，会真实花钱）
 
 /** 动作白名单（路由层校验用，与类型同源）。 */
@@ -43,6 +46,9 @@ const ACTIONS: readonly MeooAction[] = [
   'project',
   'apikey',
   'ak',
+  'account-switch',
+  'account-remove',
+  'checkin',
   'test-model',
 ];
 
